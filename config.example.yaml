@@ -1,0 +1,56 @@
+# Savras Configuration Example
+# Copy to config.yaml and update with your values
+
+server:
+  listen_addr: ":8080"
+  grafana_addr: "http://127.0.0.1:3000"
+
+auth:
+  jwt_secret: "your-jwt-secret-key-change-in-production"
+  jwt_expiry: "24h"
+  cookie_name: "savras_auth"
+  cookie_secure: false  # set to true in production with HTTPS
+  # Optional: local admin user that bypasses LDAP (e.g. Grafana default admin)
+  # local_admin_username: "admin"
+  # local_admin_password: "admin-password"
+
+ldap:
+  host: "ldap.example.com"
+  port: 389
+  bind_dn: "cn=admin,dc=example,dc=com"
+  bind_password: "ldap-password"
+  base_dn: "ou=people,dc=amyinfo,dc=com"
+  user_attr: "uid"
+  user_filter: "(&(objectClass=posixAccount)(uid=%s))"
+  email_attr: "mail"
+  group_base_dn: "ou=groups,dc=amyinfo,dc=com"
+  group_attr: "cn"
+  group_member_attr: "memberUid"
+  group_filter: "(objectClass=posixGroup)"
+
+grafana:
+  admin_user: "admin"
+  admin_password: "admin"
+  api_token: ""  # Or use admin_user/admin_password
+
+sync:
+  enabled: true
+  interval_minutes: 30
+  startup_delay_seconds: 10
+  groups_mapping:
+    - ad_group: "Grafana_Viewers"
+      grafana_team: "Viewers"
+    - ad_group: "Grafana_Editors"
+      grafana_team: "Editors"
+    - ad_group: "Grafana_Admins"
+      grafana_team: "Admins"
+  folder_permissions:
+    - folder: "Production"
+      team: "Admins"
+      permission: "Admin"
+    - folder: "Staging"
+      team: "Editors"
+      permission: "Edit"
+    - folder: "Public"
+      team: "Viewers"
+      permission: "View"
