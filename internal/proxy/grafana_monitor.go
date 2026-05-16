@@ -30,6 +30,7 @@ type GrafanaMonitor struct {
 	grafanaAddr string // base URL for health probes
 
 	probeCancel context.CancelFunc
+	bgCancel    context.CancelFunc // cancels the background health probe
 
 	// onRecovery is called once when Grafana transitions from StateDown
 	// back to StateUp, before traffic resumes.
@@ -55,13 +56,53 @@ func NewGrafanaMonitor(grafanaAddr string, onRecovery func()) *GrafanaMonitor {
 	}
 }
 
-// Stop cancels any active probe loop.
+// Stop cancels any active probe loop and the background health check.
 func (m *GrafanaMonitor) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.probeCancel != nil {
 		m.probeCancel()
 		m.probeCancel = nil
+	}
+	if m.bgCancel != nil {
+		m.bgCancel()
+		m.bgCancel = nil
+	}
+}
+
+// Start launches a background goroutine that probes Grafana health every 30
+// seconds. If the probe fails while the state is StateUp, it triggers the
+// recovery probe loop (the same path as OnProxyError). This ensures Grafana
+// restarts are detected even during periods of no user traffic.
+// Start must not be called more than once.
+func (m *GrafanaMonitor) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.bgCancel = cancel
+	m.mu.Unlock()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	go m.backgroundCheck(ctx, client)
+}
+
+func (m *GrafanaMonitor) backgroundCheck(ctx context.Context, client *http.Client) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		resp, err := client.Get(m.grafanaAddr + "/api/health")
+		if err != nil {
+			slog.Warn("grafana: background health probe failed",
+				"error", err)
+			m.OnProxyError()
+		} else {
+			resp.Body.Close()
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 

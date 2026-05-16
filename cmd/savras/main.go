@@ -60,10 +60,14 @@ func main() {
 			return nil
 		})
 
-		recoveryFn = doSync
+		recoveryFn = func() {
+			doSync()
+			auth.InvalidateTokens()
+		}
 	}
 	monitor := proxy.NewGrafanaMonitor(cfg.Server.GrafanaAddr, recoveryFn)
 	proxy.SetGrafanaMonitor(monitor)
+	monitor.Start()
 
 	handler := proxy.NewProxyHandler(cfg)
 

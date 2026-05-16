@@ -142,6 +142,14 @@ func AuthMiddleware(next http.Handler, cfg *config.Config) http.Handler {
 
 		claims, err := auth.ValidateJWT(cookie.Value)
 		if err != nil || claims == nil {
+			http.SetCookie(w, &http.Cookie{
+				Name:     cfg.Auth.CookieName,
+				Value:    "",
+				Path:     "/",
+				MaxAge:   -1,
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+			})
 			http.Redirect(w, r, "/login", http.StatusFound)
 			logger.Info("auth: redirect to login due to invalid token", "path", r.URL.Path)
 			return
