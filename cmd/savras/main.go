@@ -34,7 +34,7 @@ func main() {
 		proxy.SetSyncReadyFn(func() bool {
 			select {
 			case <-worker.Ready():
-				return true
+				return !worker.IsStale()
 			default:
 				return false
 			}

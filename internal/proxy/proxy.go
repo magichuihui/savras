@@ -112,6 +112,20 @@ func AuthMiddleware(next http.Handler, cfg *config.Config) http.Handler {
 			return
 		}
 
+		// If sync is stale (Grafana likely restarted), block traffic until
+		// the next sync cycle completes and restores team/permission state.
+		if syncReadyFn != nil && !syncReadyFn() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{
+				"status": "syncing",
+				"reason": "permission sync in progress, try again shortly",
+			})
+			logger.Warn("auth: blocked request due to stale sync state",
+				"path", r.URL.Path, "user", claims.Username)
+			return
+		}
+
 		// Carry claims to downstream middlewares/handlers
 		ctx := context.WithValue(r.Context(), claimsContextKey, claims)
 		logger.Info("auth: user authenticated", "path", r.URL.Path, "user", claims.Username)

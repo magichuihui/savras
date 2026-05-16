@@ -15,14 +15,15 @@ import (
 
 // SyncWorker periodically syncs AD groups to Grafana teams.
 type SyncWorker struct {
-	cfg        *grafConfig.Config
-	grafClient *grafana.Client
-	trigger    chan struct{}
-	stop       chan struct{}
-	ready      chan struct{} // closed after initial sync completes
-	interval   time.Duration
-	cache      map[string]int64 // login -> Grafana user ID
-	mu         sync.RWMutex
+	cfg           *grafConfig.Config
+	grafClient    *grafana.Client
+	trigger       chan struct{}
+	stop          chan struct{}
+	ready         chan struct{} // closed after initial sync completes
+	interval      time.Duration
+	cache         map[string]int64 // login -> Grafana user ID
+	lastSyncTime  time.Time
+	mu            sync.RWMutex
 }
 
 // NewSyncWorker creates a new worker instance.
@@ -56,6 +57,10 @@ func (w *SyncWorker) Start() {
 		slog.Info("sync worker: initial sync")
 		if err := w.syncOnce(); err != nil {
 			slog.Error("sync worker: initial sync failed", "error", err)
+		} else {
+			w.mu.Lock()
+			w.lastSyncTime = time.Now()
+			w.mu.Unlock()
 		}
 		close(w.ready)
 		w.loop()
@@ -78,6 +83,28 @@ func (w *SyncWorker) Ready() <-chan struct{} {
 	return w.ready
 }
 
+// LastSyncAt returns the time of the last successful sync. Returns zero time if
+// no sync has completed yet.
+func (w *SyncWorker) LastSyncAt() time.Time {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.lastSyncTime
+}
+
+// IsStale returns true when sync is enabled but no successful sync has completed
+// within twice the configured interval. This is used to detect cases where Grafana
+// restarted and the sync worker hasn't re-synced yet.
+func (w *SyncWorker) IsStale() bool {
+	if w.interval <= 0 {
+		return false
+	}
+	last := w.LastSyncAt()
+	if last.IsZero() {
+		return true // never synced
+	}
+	return time.Since(last) > w.interval*2
+}
+
 // Trigger allows manual triggering of a sync cycle.
 func (w *SyncWorker) Trigger() {
 	select {
@@ -92,9 +119,17 @@ func (w *SyncWorker) loop() {
 	for {
 		select {
 		case <-ticker.C:
-			_ = w.syncOnce()
+			if err := w.syncOnce(); err == nil {
+				w.mu.Lock()
+				w.lastSyncTime = time.Now()
+				w.mu.Unlock()
+			}
 		case <-w.trigger:
-			_ = w.syncOnce()
+			if err := w.syncOnce(); err == nil {
+				w.mu.Lock()
+				w.lastSyncTime = time.Now()
+				w.mu.Unlock()
+			}
 		case <-w.stop:
 			return
 		}
