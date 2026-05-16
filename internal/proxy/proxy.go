@@ -148,6 +148,7 @@ func AuthMiddleware(next http.Handler, cfg *config.Config) http.Handler {
 				Path:     "/",
 				MaxAge:   -1,
 				HttpOnly: true,
+				Secure:   true,
 				SameSite: http.SameSiteLaxMode,
 			})
 			http.Redirect(w, r, "/login", http.StatusFound)
@@ -546,6 +547,7 @@ func loginHandler(cfg *config.Config) http.HandlerFunc {
 			Value:    token,
 			Path:     "/",
 			HttpOnly: true,
+			Secure:   true,
 			SameSite: http.SameSiteLaxMode,
 		})
 
@@ -570,6 +572,7 @@ func logoutHandler(cfg *config.Config) http.HandlerFunc {
 			Path:     "/",
 			MaxAge:   -1,
 			HttpOnly: true,
+			Secure:   true,
 			SameSite: http.SameSiteLaxMode,
 		})
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -609,6 +612,7 @@ func grafanaLogoutHandler(cfg *config.Config) http.HandlerFunc {
 				Path:     "/",
 				MaxAge:   -1,
 				HttpOnly: true,
+				Secure:   true,
 				SameSite: http.SameSiteLaxMode,
 			},
 		}
