@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	cfg "savras/internal/config"
 
 	"github.com/go-ldap/ldap/v3"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 // AuthResult holds basic user information retrieved from LDAP
@@ -28,12 +30,14 @@ type JWTClaims struct {
 	Username string   `json:"username"`
 	Email    string   `json:"email"`
 	Groups   []string `json:"groups"`
+	Gen      string   `json:"gen"`
 	jwt.RegisteredClaims
 }
 
 var (
 	globalCfg  *cfg.Config
 	privateKey *rsa.PrivateKey
+	tokenGen   atomic.Value // stores UUID string, incremented on Grafana restart
 )
 
 // Init loads the configuration for the auth package
@@ -41,6 +45,7 @@ func Init(c *cfg.Config) {
 	globalCfg = c
 	// reset cached key when config changes
 	privateKey = nil
+	tokenGen.Store(uuid.New().String())
 }
 
 // getPrivateKey lazily loads the RSA private key from config or env
@@ -173,6 +178,7 @@ func GenerateJWT(user *AuthResult) (string, error) {
 		Username: user.Username,
 		Email:    user.Email,
 		Groups:   user.Groups,
+		Gen:      tokenGen.Load().(string),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    "grafana-auth-proxy",
 			Subject:   user.Username,
@@ -213,6 +219,9 @@ func ValidateJWT(tokenString string) (*JWTClaims, error) {
 			return nil, err
 		}
 		if claims, ok := t.Claims.(*JWTClaims); ok && t.Valid {
+			if claims.Gen != tokenGen.Load().(string) {
+				return nil, errors.New("auth: token generation mismatch")
+			}
 			return claims, nil
 		}
 		return nil, errors.New("auth: invalid token")
@@ -232,7 +241,17 @@ func ValidateJWT(tokenString string) (*JWTClaims, error) {
 		return nil, err
 	}
 	if claims, ok := t.Claims.(*JWTClaims); ok && t.Valid {
+		if claims.Gen != tokenGen.Load().(string) {
+			return nil, errors.New("auth: token generation mismatch")
+		}
 		return claims, nil
 	}
 	return nil, errors.New("auth: invalid token")
+}
+
+// InvalidateTokens generates a new token generation UUID, making all
+// existing JWTs invalid. Call this after Grafana restart is detected to
+// force users to re-authenticate (triggering a post-login sync).
+func InvalidateTokens() {
+	tokenGen.Store(uuid.New().String())
 }
