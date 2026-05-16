@@ -1,5 +1,14 @@
 # Savras Configuration Example
 # Copy to config.yaml and update with your values
+#
+# Environment variable overrides for sensitive fields (Kubernetes Secrets friendly):
+#   SAVRAS_LDAP_BIND_PASSWORD        -> ldap.bind_password
+#   SAVRAS_GRAFANA_ADMIN_PASSWORD    -> grafana.admin_password
+#   SAVRAS_GRAFANA_API_TOKEN         -> grafana.api_token
+#   SAVRAS_AUTH_JWT_SECRET           -> auth.jwt_secret
+#   SAVRAS_AUTH_JWT_PRIVATE_KEY      -> auth.jwt_private_key
+#   SAVRAS_AUTH_LOCAL_ADMIN_PASSWORD -> auth.local_admin_password
+# Env vars take precedence over values in this file.
 
 server:
   listen_addr: ":8080"
@@ -51,6 +60,9 @@ sync:
     - folder: "Staging"
       team: "Editors"
       permission: "Edit"
+    - folder: "Staging"
+      team: "Viewers"
+      permission: "View"
     - folder: "Public"
       team: "Viewers"
       permission: "View"
