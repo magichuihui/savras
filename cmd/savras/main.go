@@ -45,6 +45,14 @@ func main() {
 		})
 	}
 
+	// Grafana lifecycle monitor — detects crashes and restarts via proxy errors
+	// and health probes, then triggers a blocking sync when UUID changes.
+	monitor := proxy.NewGrafanaMonitor(cfg.Server.GrafanaAddr, nil)
+	if worker != nil {
+		monitor = proxy.NewGrafanaMonitor(cfg.Server.GrafanaAddr, worker.SyncNow)
+	}
+	proxy.SetGrafanaMonitor(monitor)
+
 	handler := proxy.NewProxyHandler(cfg)
 
 	srv := &http.Server{

@@ -78,6 +78,15 @@ func (w *SyncWorker) Ready() <-chan struct{} {
 	return w.ready
 }
 
+// SyncNow performs a full sync cycle synchronously and returns any error.
+// This is used by the Grafana lifecycle monitor to force a sync when a
+// Grafana restart is detected (UUID change). Safe to call concurrently
+// with the worker's own loop — each call creates its own LDAP connection
+// and Grafana API sessions.
+func (w *SyncWorker) SyncNow() error {
+	return w.syncOnce()
+}
+
 // Trigger allows manual triggering of a sync cycle.
 func (w *SyncWorker) Trigger() {
 	select {

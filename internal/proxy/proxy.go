@@ -41,6 +41,16 @@ func SetSyncReadyFn(fn func() bool) {
 	syncReadyFn = fn
 }
 
+// grafanaMonitor is the lifecycle monitor for the Grafana backend.
+// When set, the reverse proxy error handler, auth middleware, and health
+// endpoint all consult it to decide whether traffic should be blocked.
+var grafanaMonitor *GrafanaMonitor
+
+// SetGrafanaMonitor wires a GrafanaMonitor into the proxy layer.
+func SetGrafanaMonitor(m *GrafanaMonitor) {
+	grafanaMonitor = m
+}
+
 // Initialize a JSON logger for structured logs
 var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{AddSource: true}))
 
@@ -63,6 +73,10 @@ func NewProxyHandler(cfg *config.Config) http.Handler {
 	rp := httputil.NewSingleHostReverseProxy(target)
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		logger.Error("proxy: failed to proxy request", "target", target, "path", r.URL.Path, "error", err)
+		// Notify the lifecycle monitor so it can enter recovery mode.
+		if grafanaMonitor != nil {
+			grafanaMonitor.OnProxyError()
+		}
 		http.Error(w, "proxy error: unable to reach Grafana at "+target.String(), http.StatusBadGateway)
 	}
 
@@ -112,6 +126,19 @@ func AuthMiddleware(next http.Handler, cfg *config.Config) http.Handler {
 			return
 		}
 
+		// If Grafana is down or in recovery, block traffic with 503.
+		if grafanaMonitor != nil && grafanaMonitor.ShouldBlock() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{
+				"status": "unavailable",
+				"reason": "Grafana backend is unavailable, try again shortly",
+			})
+			logger.Warn("auth: blocked request — Grafana backend is down",
+				"path", r.URL.Path, "user", claims.Username)
+			return
+		}
+
 		// Carry claims to downstream middlewares/handlers
 		ctx := context.WithValue(r.Context(), claimsContextKey, claims)
 		logger.Info("auth: user authenticated", "path", r.URL.Path, "user", claims.Username)
@@ -152,6 +179,16 @@ func healthHandler(cfg *config.Config) http.HandlerFunc {
 			json.NewEncoder(w).Encode(map[string]string{
 				"status": "initializing",
 				"reason": "initial sync not yet complete",
+			})
+			return
+		}
+
+		// If the Grafana lifecycle monitor reports backend is down, not ready.
+		if grafanaMonitor != nil && grafanaMonitor.ShouldBlock() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{
+				"status": "unavailable",
+				"reason": "Grafana backend is unreachable",
 			})
 			return
 		}
