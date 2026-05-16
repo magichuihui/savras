@@ -31,6 +31,10 @@ type GrafanaMonitor struct {
 
 	probeCancel context.CancelFunc
 
+	// onRecovery is called once when Grafana transitions from StateDown
+	// back to StateUp, before traffic resumes.
+	onRecovery func()
+
 	// Backoff parameters
 	baseInterval time.Duration
 	maxInterval  time.Duration
@@ -38,11 +42,14 @@ type GrafanaMonitor struct {
 }
 
 // NewGrafanaMonitor creates a monitor that probes grafanaAddr for health.
-func NewGrafanaMonitor(grafanaAddr string) *GrafanaMonitor {
+// When Grafana recovers from a down state, onRecovery is called (if non-nil)
+// before traffic resumes. Use this to trigger a sync on restart.
+func NewGrafanaMonitor(grafanaAddr string, onRecovery func()) *GrafanaMonitor {
 	return &GrafanaMonitor{
 		state:        StateUp,
 		grafanaAddr:  grafanaAddr,
-		baseInterval: 100 * time.Millisecond,
+		onRecovery:   onRecovery,
+		baseInterval: 1 * time.Second,
 		maxInterval:  10 * time.Second,
 		factor:       2.0,
 	}
@@ -126,10 +133,18 @@ func (m *GrafanaMonitor) probeLoop() {
 			continue
 		}
 
-		// Grafana is reachable — resume traffic.
+		// Grafana is reachable — fire recovery callback then resume traffic.
+		// Capture onRecovery outside the lock since it may block (e.g. sync).
 		m.mu.Lock()
 		m.state = StateUp
+		recoveryFn := m.onRecovery
 		m.mu.Unlock()
+
+		if recoveryFn != nil {
+			slog.Info("grafana: backend recovered, running recovery callback")
+			recoveryFn()
+		}
+
 		slog.Info("grafana: backend reachable, resuming traffic")
 		return
 	}

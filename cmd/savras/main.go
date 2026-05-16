@@ -46,8 +46,18 @@ func main() {
 	}
 
 	// Grafana lifecycle monitor — detects Grafana crashes via proxy errors
-	// and health probes with exponential backoff.
-	monitor := proxy.NewGrafanaMonitor(cfg.Server.GrafanaAddr)
+	// and health probes with exponential backoff. When Grafana recovers
+	// from a down state, trigger a sync to rebuild teams/permissions.
+	var recoveryFn func()
+	if worker != nil {
+		syncFn := worker.SyncNow
+		recoveryFn = func() {
+			if err := syncFn(); err != nil {
+				slog.Error("recovery sync failed", "error", err)
+			}
+		}
+	}
+	monitor := proxy.NewGrafanaMonitor(cfg.Server.GrafanaAddr, recoveryFn)
 	proxy.SetGrafanaMonitor(monitor)
 
 	handler := proxy.NewProxyHandler(cfg)

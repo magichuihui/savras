@@ -80,11 +80,13 @@ func NewProxyHandler(cfg *config.Config) http.Handler {
 		http.Error(w, "proxy error: unable to reach Grafana at "+target.String(), http.StatusBadGateway)
 	}
 
-	// Build middleware chain: RBAC -> Header injection -> Auth
+	// BlockWhenDown blocks all traffic when Grafana is unreachable.
+	// It is the outermost wrapper so it runs before auth/login handling.
 	var handler http.Handler = rp
 	handler = RBACMiddleware(handler, cfg)
 	handler = HeaderInjectionMiddleware(handler)
 	handler = AuthMiddleware(handler, cfg)
+	handler = BlockWhenDownMiddleware(handler)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/-/savras/health", healthHandler(cfg))
@@ -107,6 +109,25 @@ func RBACMiddleware(next http.Handler, cfg *config.Config) http.Handler {
 	})
 }
 
+// BlockWhenDownMiddleware blocks all traffic with 503 when the Grafana
+// lifecycle monitor reports Grafana is unreachable.
+func BlockWhenDownMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if grafanaMonitor != nil && grafanaMonitor.ShouldBlock() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{
+				"status": "unavailable",
+				"reason": "Grafana backend is unreachable, try again shortly",
+			})
+			logger.Warn("proxy: blocked request — Grafana backend is down",
+				"path", r.URL.Path)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // AuthMiddleware validates a JWT cookie and rejects/redirects unauthenticated users.
 func AuthMiddleware(next http.Handler, cfg *config.Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -123,19 +144,6 @@ func AuthMiddleware(next http.Handler, cfg *config.Config) http.Handler {
 		if err != nil || claims == nil {
 			http.Redirect(w, r, "/login", http.StatusFound)
 			logger.Info("auth: redirect to login due to invalid token", "path", r.URL.Path)
-			return
-		}
-
-		// If Grafana is down or in recovery, block traffic with 503.
-		if grafanaMonitor != nil && grafanaMonitor.ShouldBlock() {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{
-				"status": "unavailable",
-				"reason": "Grafana backend is unavailable, try again shortly",
-			})
-			logger.Warn("auth: blocked request — Grafana backend is down",
-				"path", r.URL.Path, "user", claims.Username)
 			return
 		}
 
@@ -193,13 +201,18 @@ func healthHandler(cfg *config.Config) http.HandlerFunc {
 			return
 		}
 
+		grafState := "reachable"
+		if grafanaMonitor != nil && grafanaMonitor.State() == StateDown {
+			grafState = "unreachable"
+		}
 		ldapOK := checkLDAPConnectivity()
 		grafOK := checkGrafanaConnectivity(cfg)
 
 		status := map[string]any{
-			"status":  "ok",
-			"ldap":    ldapOK,
-			"grafana": grafOK,
+			"status":        "ok",
+			"grafana_state": grafState,
+			"ldap":          ldapOK,
+			"grafana":       grafOK,
 		}
 
 		if ldapOK && grafOK {
