@@ -39,23 +39,28 @@ func main() {
 				return false
 			}
 		})
-		proxy.SetSyncTriggerFn(func(ctx context.Context) error {
-			worker.Trigger()
-			return nil
-		})
 	}
 
-	// Grafana lifecycle monitor — detects Grafana crashes via proxy errors
-	// and health probes with exponential backoff. When Grafana recovers
-	// from a down state, trigger a sync to rebuild teams/permissions.
+	// Sync queue coalesces external triggers (manual, post-login) during
+	// Grafana downtime into a single execution on recovery.
+	var syncQueue *proxy.SyncQueue
+	// Recovery callback: blocking sync that runs in the monitor's probe
+	// loop to ensure traffic is blocked until permissions are rebuilt.
 	var recoveryFn func()
 	if worker != nil {
-		syncFn := worker.SyncNow
-		recoveryFn = func() {
-			if err := syncFn(); err != nil {
-				slog.Error("recovery sync failed", "error", err)
+		doSync := func() {
+			if err := worker.SyncNow(); err != nil {
+				slog.Error("sync failed", "error", err)
 			}
 		}
+
+		syncQueue = proxy.NewSyncQueue(doSync)
+		proxy.SetSyncTriggerFn(func(ctx context.Context) error {
+			syncQueue.Trigger()
+			return nil
+		})
+
+		recoveryFn = doSync
 	}
 	monitor := proxy.NewGrafanaMonitor(cfg.Server.GrafanaAddr, recoveryFn)
 	proxy.SetGrafanaMonitor(monitor)

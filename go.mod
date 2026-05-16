@@ -1,6 +1,7 @@
 module savras
 
 go 1.25.3
+toolchain go1.25.9
 
 require (
 	github.com/go-ldap/ldap/v3 v3.4.13
