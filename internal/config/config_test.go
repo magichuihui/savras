@@ -46,6 +46,24 @@ auth:
 	}
 }
 
+func TestLDAPConfig_URL(t *testing.T) {
+	tests := []struct {
+		host string
+		port int
+		want string
+	}{
+		{"ldap.example.com", 389, "ldap://ldap.example.com:389"},
+		{"10.0.0.1", 636, "ldap://10.0.0.1:636"},
+		{"localhost", 389, "ldap://localhost:389"},
+	}
+	for _, tc := range tests {
+		lc := &LDAPConfig{Host: tc.host, Port: tc.port}
+		if got := lc.URL(); got != tc.want {
+			t.Errorf("URL() = %q, want %q", got, tc.want)
+		}
+	}
+}
+
 func TestLoadConfig_FromEnv(t *testing.T) {
 	os.Setenv("SAVRAS_SERVER_LISTEN_ADDR", ":7070")
 	defer os.Unsetenv("SAVRAS_SERVER_LISTEN_ADDR")

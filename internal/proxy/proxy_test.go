@@ -12,6 +12,16 @@ import (
 	httpconfig "savras/internal/config"
 )
 
+func TestSetGrafanaMonitor(t *testing.T) {
+	grafanaMonitor = nil
+	m := NewGrafanaMonitor("http://localhost:3000", nil)
+	SetGrafanaMonitor(m)
+	if grafanaMonitor != m {
+		t.Fatal("expected grafanaMonitor to be set")
+	}
+	SetGrafanaMonitor(nil)
+}
+
 func TestNewProxyHandlerConstructor(t *testing.T) {
 	cfg := &httpconfig.Config{
 		Server: httpconfig.ServerConfig{GrafanaAddr: "http://localhost:3000"},
@@ -410,4 +420,186 @@ func TestHealthHandler_BlocksUntilSyncReady(t *testing.T) {
 
 	// Clean up
 	SetSyncReadyFn(nil)
+}
+
+func TestLogoutResponseWriter_Write(t *testing.T) {
+	rr := httptest.NewRecorder()
+	lw := &logoutResponseWriter{
+		ResponseWriter: rr,
+		cookie: &http.Cookie{
+			Name:     "test_cookie",
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
+			Secure:   true,
+		},
+	}
+
+	n, err := lw.Write([]byte("hello"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("expected 5 bytes, got %d", n)
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	cookies := rr.Result().Cookies()
+	found := false
+	for _, c := range cookies {
+		if c.Name == "test_cookie" && c.MaxAge < 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected cookie to be cleared on Write")
+	}
+}
+
+func TestBlockWhenDownMiddleware_NoMonitor(t *testing.T) {
+	orig := grafanaMonitor
+	grafanaMonitor = nil
+	defer func() { grafanaMonitor = orig }()
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := BlockWhenDownMiddleware(next)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestBlockWhenDownMiddleware_BlocksWhenDown(t *testing.T) {
+	orig := grafanaMonitor
+	m := NewGrafanaMonitor("http://localhost:3000", nil)
+	m.mu.Lock()
+	m.state = StateDown
+	m.mu.Unlock()
+	grafanaMonitor = m
+	defer func() { grafanaMonitor = orig }()
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("next should not be called when blocked")
+	})
+	handler := BlockWhenDownMiddleware(next)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_InvalidCookieClearsIt(t *testing.T) {
+	cfg := &httpconfig.Config{
+		Auth: httpconfig.AuthConfig{CookieName: "savras_session"},
+	}
+	handler := AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "savras_session", Value: "definitely-invalid-jwt"})
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect, got %d", rr.Code)
+	}
+
+	cookies := rr.Result().Cookies()
+	found := false
+	for _, c := range cookies {
+		if c.Name == "savras_session" && c.MaxAge < 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected cookie to be cleared on invalid JWT")
+	}
+}
+
+func TestCheckLDAPConnectivity_UnreachableAddr(t *testing.T) {
+	t.Setenv("LDAP_ADDR", "127.0.0.1:1")
+	result := checkLDAPConnectivity()
+	if result {
+		t.Fatal("expected false for unreachable LDAP address")
+	}
+}
+
+func TestHealthHandler_WithGrafanaMonitorDown(t *testing.T) {
+	orig := grafanaMonitor
+	m := NewGrafanaMonitor("http://localhost:3000", nil)
+	m.mu.Lock()
+	m.state = StateDown
+	m.mu.Unlock()
+	grafanaMonitor = m
+	defer func() { grafanaMonitor = orig }()
+
+	cfg := &httpconfig.Config{
+		Server: httpconfig.ServerConfig{GrafanaAddr: "http://localhost:3000"},
+	}
+	handler := healthHandler(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/-/savras/health", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rr.Code)
+	}
+}
+
+func TestLoginHandler_PostAuthFailed(t *testing.T) {
+	cfg := &httpconfig.Config{
+		Auth: httpconfig.AuthConfig{
+			CookieName:         "savras_session",
+			LocalAdminUsername: "admin",
+			LocalAdminPassword: "correct-pass",
+		},
+	}
+	handler := loginHandler(cfg)
+
+	body := "username=admin&password=wrong-pass"
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 with error, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "Invalid username or password") {
+		t.Fatal("expected error message for failed auth")
+	}
+}
+
+func TestNewProxyHandler_WithGrafanaMonitor(t *testing.T) {
+	orig := grafanaMonitor
+	m := NewGrafanaMonitor("http://localhost:3000", nil)
+	grafanaMonitor = m
+	defer func() { grafanaMonitor = orig }()
+
+	cfg := &httpconfig.Config{
+		Server: httpconfig.ServerConfig{GrafanaAddr: "http://localhost:3000"},
+		Auth:   httpconfig.AuthConfig{CookieName: "savras_session"},
+	}
+	h := NewProxyHandler(cfg)
+	if h == nil {
+		t.Fatal("expected non-nil handler")
+	}
 }

@@ -362,3 +362,43 @@ func TestClient_HTTPClientTimeout(t *testing.T) {
 		t.Fatalf("expected timeout 15s, got %v", c.httpClient.Timeout)
 	}
 }
+
+func TestLookupUser(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if !strings.Contains(r.URL.RawQuery, "loginOrEmail=testuser") {
+			t.Errorf("expected loginOrEmail=testuser in query, got %s", r.URL.RawQuery)
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id": 42, "login": "testuser", "email": "test@example.com",
+		})
+	}))
+	defer server.Close()
+
+	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
+	c := NewClient(server.URL, cfg)
+	user, err := c.LookupUser("testuser")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if user.ID != 42 {
+		t.Fatalf("expected user ID 42, got %d", user.ID)
+	}
+}
+
+func TestLookupUser_NotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
+	c := NewClient(server.URL, cfg)
+	_, err := c.LookupUser("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for not found user")
+	}
+}

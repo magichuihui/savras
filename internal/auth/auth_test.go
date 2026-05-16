@@ -309,3 +309,57 @@ func TestGetUserInfo_NotInitialized(t *testing.T) {
 		t.Fatalf("expected 'auth: config not initialized', got %q", err.Error())
 	}
 }
+
+func TestInvalidateTokens(t *testing.T) {
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			JwtSecret:         "test-secret",
+			JwtExpiryDuration: 1 * time.Hour,
+		},
+	}
+	Init(cfg)
+
+	user := &AuthResult{Username: "testuser"}
+	token, err := GenerateJWT(user)
+	if err != nil {
+		t.Fatalf("failed to generate JWT: %v", err)
+	}
+
+	_, err = ValidateJWT(token)
+	if err != nil {
+		t.Fatalf("expected valid token, got: %v", err)
+	}
+
+	InvalidateTokens()
+
+	_, err = ValidateJWT(token)
+	if err == nil {
+		t.Fatal("expected token to be rejected after InvalidateTokens")
+	}
+}
+
+func TestValidateJWT_GenMismatch(t *testing.T) {
+	cfg := &config.Config{
+		Auth: config.AuthConfig{
+			JwtSecret:         "test-secret",
+			JwtExpiryDuration: 1 * time.Hour,
+		},
+	}
+	Init(cfg)
+
+	user := &AuthResult{Username: "testuser"}
+	token, err := GenerateJWT(user)
+	if err != nil {
+		t.Fatalf("failed to generate JWT: %v", err)
+	}
+
+	// Manually change tokenGen to simulate cross-generation token
+	oldGen := tokenGen.Load().(string)
+	tokenGen.Store("some-other-uuid")
+	defer tokenGen.Store(oldGen)
+
+	_, err = ValidateJWT(token)
+	if err == nil {
+		t.Fatal("expected error for gen mismatch")
+	}
+}

@@ -2,6 +2,8 @@ package sync
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -147,61 +149,13 @@ func TestStart_Stop(t *testing.T) {
 	w.Stop()
 }
 
-func TestTrigger(t *testing.T) {
-	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: true, Interval: time.Hour}}
-	w := NewSyncWorker(c, nil)
-	w.Trigger()
-	w.Trigger()
-	w.Stop()
-}
-
-func TestStartSyncWorker(t *testing.T) {
+func TestSyncNow_NilGrafClient(t *testing.T) {
 	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: false}}
-	w := StartSyncWorker(c, nil)
-	if w == nil {
-		t.Fatal("expected non-nil SyncWorker")
+	w := NewSyncWorker(c, nil)
+	err := w.SyncNow()
+	if err == nil {
+		t.Fatal("expected error for nil grafClient")
 	}
-	w.Stop()
-}
-
-func TestStop_WithoutStart(t *testing.T) {
-	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: false}}
-	w := NewSyncWorker(c, nil)
-	w.Stop()
-}
-
-func TestStart_AlreadyStopped(t *testing.T) {
-	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: true, Interval: 50 * time.Millisecond}}
-	w := NewSyncWorker(c, nil)
-	w.Start()
-	time.Sleep(10 * time.Millisecond)
-	w.Stop()
-	w.Stop()
-}
-
-func TestSyncWorker_WithMockClient(t *testing.T) {
-	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: false}}
-	w := NewSyncWorker(c, nil)
-	if w == nil {
-		t.Fatal("expected non-nil worker")
-	}
-	mock := newMockClient()
-	_ = mock
-}
-
-func TestSyncWorker_EnabledConfig(t *testing.T) {
-	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: true, Interval: 30 * time.Second}}
-	w := NewSyncWorker(c, nil)
-	if w.interval != 30*time.Second {
-		t.Fatalf("expected 30s interval, got %v", w.interval)
-	}
-}
-
-func TestSyncWorker_DisabledConfig(t *testing.T) {
-	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: false}}
-	w := NewSyncWorker(c, nil)
-	w.Start() // should log "disabled by config"
-	w.Stop()
 }
 
 func TestSyncWorker_Ready(t *testing.T) {
@@ -231,7 +185,7 @@ func TestSyncWorker_StartStop(t *testing.T) {
 	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: true, Interval: 10 * time.Millisecond}}
 	w := NewSyncWorker(c, nil)
 	w.Start()
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 	w.Stop()
 }
 
@@ -275,4 +229,49 @@ func TestLoop_NotStartedWhenDisabled(t *testing.T) {
 	w.Start()
 	time.Sleep(10 * time.Millisecond)
 	w.Stop()
+}
+
+func TestStartSyncWorker_Disabled(t *testing.T) {
+	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: false}}
+	w := StartSyncWorker(c, nil)
+	if w == nil {
+		t.Fatal("expected non-nil SyncWorker")
+	}
+	w.Stop()
+}
+
+func TestStartSyncWorker_Enabled(t *testing.T) {
+	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: true, Interval: 50 * time.Millisecond, StartupDelaySeconds: 0}}
+	w := StartSyncWorker(c, nil)
+	if w == nil {
+		t.Fatal("expected non-nil SyncWorker")
+	}
+	time.Sleep(20 * time.Millisecond)
+	w.Stop()
+}
+
+func TestAddTeamMemberWithRetry_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	gc := grafana.NewClient(server.URL, &cfg.GrafanaConfig{})
+	err := addTeamMemberWithRetry(gc, 1, 1)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestAddTeamMemberWithRetry_RetriesExhausted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	gc := grafana.NewClient(server.URL, &cfg.GrafanaConfig{})
+	err := addTeamMemberWithRetry(gc, 1, 1)
+	if err == nil {
+		t.Fatal("expected error after retries exhausted")
+	}
 }

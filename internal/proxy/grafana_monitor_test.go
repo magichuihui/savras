@@ -158,3 +158,42 @@ func TestGrafanaMonitor_NextInterval(t *testing.T) {
 		t.Fatalf("expected next <= maxInterval + 50%%, got %v", next)
 	}
 }
+
+func TestGrafanaMonitor_Start_Stop_CoversBackground(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	m := NewGrafanaMonitor(srv.URL, nil)
+	m.Start()
+	m.Stop()
+
+	// After Stop, bgCancel is cancelled and backgroundCheck returns
+	// Also covers the bgCancel path in Stop()
+}
+
+func TestGrafanaMonitor_BackgroundCheckDetectsDown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	// Close immediately so backgroundCheck gets an error
+	srv.Close()
+
+	m := NewGrafanaMonitor(srv.URL, nil)
+	m.Start()
+	defer m.Stop()
+
+	// backgroundCheck should detect the error and call OnProxyError
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if m.State() == StateDown {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if m.State() != StateDown {
+		t.Fatal("expected StateDown after backgroundCheck detects down Grafana")
+	}
+}
