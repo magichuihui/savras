@@ -5,16 +5,158 @@
 
 Savras is a Grafana authentication proxy and organization sync tool that runs as a sidecar.
 
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "External Services"
+        USER([User Browser])
+        GRAFANA([Grafana])
+        LDAP([Active Directory])
+    end
+
+    subgraph "Savras Sidecar"
+        direction TB
+        MAIN[cmd/savras/main.go<br/>Entry & wiring]
+        PROXY[internal/proxy<br/>HTTP handlers, middleware,<br/>reverse proxy, monitor]
+        AUTH[internal/auth<br/>LDAP auth, JWT]
+        SYNC[internal/sync<br/>AD→Grafana team sync]
+        GCLIENT[internal/grafana<br/>Grafana API client]
+        CONFIG[internal/config<br/>Config loader]
+
+        MAIN --> PROXY & AUTH & SYNC & GCLIENT
+        PROXY --> AUTH
+        PROXY --> CONFIG
+        SYNC --> GCLIENT
+        SYNC --> CONFIG
+        AUTH --> CONFIG
+    end
+
+    USER -- HTTPS :8080 --> PROXY
+    PROXY -- header injection + reverse proxy --> GRAFANA
+    AUTH -- LDAP bind/search --> LDAP
+    SYNC -- HTTP API --> GRAFANA
+```
+
+### Request Flow
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant S as Savras
+    participant G as Grafana
+    participant A as AD/LDAP
+
+    B->>S: GET / (any protected path)
+    S->>S: BlockWhenDown check
+    alt Grafana is Down
+        S-->>B: 503 Service Unavailable
+    end
+    S->>S: AuthMiddleware validate JWT
+    alt No cookie or invalid
+        S-->>B: 302 Redirect to /login
+        B->>S: GET /login
+        S-->>B: Login form HTML
+        B->>S: POST /login (username, password)
+        S->>A: LDAP bind + search
+        A-->>S: user info or error
+        alt Login success
+            S->>S: Generate JWT, Set-Cookie
+            S-->>B: 302 Redirect to /
+        else Login failed
+            S-->>B: Login form + error
+        end
+    end
+    S->>S: HeaderInjection (X-WEBAUTH-USER/EMAIL)
+    S->>G: reverse proxy
+    G-->>B: Grafana page
+```
+
+### Middleware Chain
+
+```mermaid
+graph LR
+    REQ[Incoming Request] --> BLOCK[BlockWhenDown<br/>503 if Grafana down]
+    BLOCK --> MUX{Path?}
+
+    MUX -->|health| H[healthHandler]
+    MUX -->|sync trigger| S1[syncTriggerHandler]
+    MUX -->|login| L[loginHandler]
+    MUX -->|logout| LO[logoutHandler]
+
+    MUX -->|everything else| AUTH_M[AuthMiddleware<br/>validate JWT]
+    AUTH_M -->|no cookie| LOGIN_R[302 to /login]
+    AUTH_M -->|invalid token| CLEAR[clear cookie, 302 to /login]
+    AUTH_M -->|valid| HEADER[HeaderInjection<br/>X-WEBAUTH headers]
+    HEADER --> RBAC[RBACMiddleware<br/>placeholder]
+    RBAC --> RP[Reverse Proxy to Grafana]
+```
+
+### Grafana Lifecycle Monitor
+
+```mermaid
+stateDiagram-v2
+    [*] --> Up
+    Up --> Down: proxy error or health probe fail
+    Down --> Up: exponential backoff probe succeeds
+
+    state Up {
+        [*] --> Serving
+        Serving --> ProbeBG: every 30s GET /api/health
+        ProbeBG --> Serving: 2xx
+        ProbeBG --> Down: error
+    }
+
+    state Down {
+        [*] --> Blocked
+        Blocked --> Probing: backoff 1s->10s + jitter
+        Probing --> Recovered: /api/health 2xx
+        Probing --> Probing: retry
+        Recovered --> Up: callback: sync + invalidate tokens
+    }
+```
+
+### Sync Triggers
+
+```mermaid
+graph LR
+    subgraph Triggers
+        T1[SyncWorker timer<br/>every N minutes]
+        T2[Grafana recovery<br/>monitor.onRecovery]
+        T3[Manual POST<br/>/-/savras/sync/trigger]
+        T4[Post-login<br/>goroutine]
+    end
+
+    subgraph Queue
+        Q[SyncQueue<br/>chan size 1<br/>coalesces rapid triggers]
+    end
+
+    subgraph Execution
+        SW[syncOnce<br/>mutex-serialized]
+    end
+
+    T1 --> SW
+    T2 --> SW
+    T3 --> Q --> SW
+    T4 --> Q --> SW
+
+    SW --> A[LDAP: search groups]
+    SW --> B[Grafana API:<br/>lookup/create teams]
+    SW --> C[Grafana API:<br/>sync team members]
+    SW --> D[Grafana API:<br/>sync folder permissions]
+```
+
 ## Features
 
 - Active Directory LDAP authentication
-- JWT token issuance and validation
+- JWT token issuance and validation (RSA or HMAC)
 - Dynamic header injection (X-WEBAUTH-USER, X-WEBAUTH-EMAIL)
 - Reverse proxy to Grafana with auth middleware
+- Auto-detection of Grafana restart → invalidate all tokens, block traffic until sync completes
 - Periodic AD group to Grafana team synchronization
 - Folder permission assignment based on team mappings
-- Health check endpoint
-- Manual sync trigger endpoint
+- Health check endpoint (`/-/savras/health`)
+- Manual sync trigger endpoint (`POST /-/savras/sync/trigger`)
 
 ## Quick Start
 
