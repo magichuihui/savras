@@ -26,7 +26,7 @@ func TestInit(t *testing.T) {
 func TestGenerateAndValidateJWT(t *testing.T) {
 	cfg := &config.Config{
 		Auth: config.AuthConfig{
-			JwtSecret:        "test-secret",
+			JwtSecret:         "test-secret",
 			JwtExpiryDuration: 1 * time.Hour,
 		},
 	}
@@ -184,7 +184,7 @@ func TestGetPrivateKey_Caching(t *testing.T) {
 func TestGenerateJWT_NilUser(t *testing.T) {
 	cfg := &config.Config{
 		Auth: config.AuthConfig{
-			JwtSecret:        "test-secret",
+			JwtSecret:         "test-secret",
 			JwtExpiryDuration: 1 * time.Hour,
 		},
 	}
