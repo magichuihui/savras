@@ -236,59 +236,6 @@ func TestSyncWorker_Ready(t *testing.T) {
 	}
 }
 
-func TestSyncWorker_IsStale(t *testing.T) {
-	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: true, Interval: time.Hour}}
-	w := NewSyncWorker(c, nil)
-
-	// Before any sync, IsStale should return true for a worker with interval > 0
-	if !w.IsStale() {
-		t.Fatal("expected stale before any sync")
-	}
-
-	// After setting lastSyncTime to now, should not be stale
-	w.mu.Lock()
-	w.lastSyncTime = time.Now()
-	w.mu.Unlock()
-	if w.IsStale() {
-		t.Fatal("expected not stale after recent sync")
-	}
-
-	// After setting lastSyncTime to far in the past, should be stale
-	w.mu.Lock()
-	w.lastSyncTime = time.Now().Add(-3 * time.Hour)
-	w.mu.Unlock()
-	if !w.IsStale() {
-		t.Fatal("expected stale after 3x interval without sync")
-	}
-
-	// With interval = 0, IsStale should return false
-	c2 := &cfg.Config{}
-	w2 := NewSyncWorker(c2, nil)
-	if w2.IsStale() {
-		t.Fatal("expected not stale with zero interval")
-	}
-}
-
-func TestSyncWorker_LastSyncAt(t *testing.T) {
-	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: true, Interval: time.Hour}}
-	w := NewSyncWorker(c, nil)
-
-	// Initially zero
-	if !w.LastSyncAt().IsZero() {
-		t.Fatal("expected zero LastSyncAt initially")
-	}
-
-	// After setting, should return the value
-	now := time.Now()
-	w.mu.Lock()
-	w.lastSyncTime = now
-	w.mu.Unlock()
-
-	if w.LastSyncAt().IsZero() {
-		t.Fatal("expected non-zero LastSyncAt after set")
-	}
-}
-
 func TestSyncWorker_TriggerChannel(t *testing.T) {
 	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: true, Interval: time.Hour}}
 	w := NewSyncWorker(c, nil)

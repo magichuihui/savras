@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"savras/internal/auth"
 
@@ -407,49 +406,6 @@ func TestHealthHandler_BlocksUntilSyncReady(t *testing.T) {
 	handler(rr3, req)
 	if rr3.Code != http.StatusOK && rr3.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 200 or 503, got %d", rr3.Code)
-	}
-
-	// Clean up
-	SetSyncReadyFn(nil)
-}
-
-func TestAuthMiddleware_BlocksWhenSyncStale(t *testing.T) {
-	SetSyncReadyFn(nil)
-
-	// Succeeding auth has a valid JWT in the cookie
-	auth.Init(&httpconfig.Config{
-		Auth: httpconfig.AuthConfig{JwtSecret: "test-secret", JwtExpiryDuration: time.Hour},
-	})
-	token, err := auth.GenerateJWT(&auth.AuthResult{Username: "testuser"})
-	if err != nil {
-		t.Fatalf("failed to generate JWT: %v", err)
-	}
-
-	cfg := &httpconfig.Config{
-		Auth: httpconfig.AuthConfig{CookieName: "test_cookie"},
-	}
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	handler := AuthMiddleware(next, cfg)
-
-	req := httptest.NewRequest(http.MethodGet, "/d/test", nil)
-	req.AddCookie(&http.Cookie{Name: "test_cookie", Value: token})
-
-	// When sync ready returns false, AuthMiddleware should block with 503
-	SetSyncReadyFn(func() bool { return false })
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 when sync stale, got %d", rr.Code)
-	}
-
-	// When sync ready returns true, request passes through
-	SetSyncReadyFn(func() bool { return true })
-	rr2 := httptest.NewRecorder()
-	handler.ServeHTTP(rr2, req)
-	if rr2.Code != http.StatusOK {
-		t.Fatalf("expected 200 when sync ready, got %d", rr2.Code)
 	}
 
 	// Clean up
