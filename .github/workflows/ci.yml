@@ -31,6 +31,6 @@ jobs:
         with:
           files: ./coverage.out
           flags: unittests
-          fail_on_error: false
+          fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
