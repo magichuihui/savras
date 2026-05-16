@@ -21,8 +21,7 @@ type SyncWorker struct {
 	stop       chan struct{}
 	ready      chan struct{} // closed after initial sync completes
 	interval   time.Duration
-	cache      map[string]int64 // login -> Grafana user ID
-	mu         sync.RWMutex
+	runMu      sync.Mutex // serializes syncOnce calls from concurrent paths
 }
 
 // NewSyncWorker creates a new worker instance.
@@ -34,7 +33,6 @@ func NewSyncWorker(cfg *grafConfig.Config, g *grafana.Client) *SyncWorker {
 		stop:       make(chan struct{}),
 		ready:      make(chan struct{}),
 		interval:   cfg.Sync.Interval,
-		cache:      make(map[string]int64),
 	}
 	return w
 }
@@ -112,6 +110,9 @@ func (w *SyncWorker) loop() {
 
 // syncOnce performs a single synchronization pass.
 func (w *SyncWorker) syncOnce() error {
+	w.runMu.Lock()
+	defer w.runMu.Unlock()
+
 	// Establish LDAP connection
 	ldapURL := w.cfg.LDAP.URL()
 	l, err := ldap.DialURL(ldapURL)
@@ -176,32 +177,18 @@ func (w *SyncWorker) syncOnce() error {
 
 		memberDNs := entry.GetAttributeValues(w.cfg.LDAP.GroupMemberAttr)
 		slog.Info("sync: group members from LDAP", "group", adGroup, "memberCount", len(memberDNs))
-		// Map memberUid values directly to Grafana user IDs
+		// Resolve LDAP member UIDs to Grafana user IDs.
 		desiredIDs := []int64{}
 		for _, member := range memberDNs {
 			if member == "" {
 				continue
 			}
-			var uid int64
-			w.mu.RLock()
-			if v, ok := w.cache[member]; ok {
-				uid = v
+			user, err := w.grafClient.LookupUser(member)
+			if err != nil {
+				slog.Info("grafana user not found for login, skipping", "login", member, "err", err)
+				continue
 			}
-			w.mu.RUnlock()
-			if uid == 0 {
-				user, err := w.grafClient.LookupUser(member)
-				if err != nil {
-					slog.Debug("grafana user not found for login, skipping", "login", member)
-					continue
-				}
-				uid = user.ID
-				w.mu.Lock()
-				w.cache[member] = uid
-				w.mu.Unlock()
-			}
-			if uid != 0 {
-				desiredIDs = append(desiredIDs, uid)
-			}
+			desiredIDs = append(desiredIDs, user.ID)
 		}
 
 		// Get or create Grafana team
@@ -229,10 +216,11 @@ func (w *SyncWorker) syncOnce() error {
 
 			// Verify the team actually exists via the detail API. The search API may
 			// return phantom entries (stale index entries pointing to non-existent teams).
-			if _, vErr := w.grafClient.GetTeam(teamID); vErr != nil {
+			// Also check that the team name matches — after a Grafana restart with fresh
+			// SQLite, the ID might belong to a different team entirely.
+			if teamDetail, vErr := w.grafClient.GetTeam(teamID); vErr != nil {
 				slog.Warn("sync: team from search does not exist (phantom entry), recreating",
 					"team", grafTeam, "teamID", teamID, "err", vErr)
-				w.grafClient.ClearTeamCache(grafTeam)
 				id, cErr := w.grafClient.CreateTeam(grafTeam)
 				if cErr != nil {
 					slog.Error("sync: failed to recreate team after phantom detection",
@@ -242,6 +230,19 @@ func (w *SyncWorker) syncOnce() error {
 				teamID = id
 				teamFoundViaCreate = true
 				slog.Info("sync: team recreated successfully", "team", grafTeam, "teamID", teamID)
+			} else if teamDetail.Name != grafTeam {
+				slog.Warn("sync: team name mismatch, recreating",
+					"team", grafTeam, "teamID", teamID, "actualName", teamDetail.Name)
+				id, cErr := w.grafClient.CreateTeam(grafTeam)
+				if cErr != nil {
+					slog.Error("sync: failed to recreate team after name mismatch",
+						"team", grafTeam, "err", cErr)
+					continue
+				}
+				teamID = id
+				teamFoundViaCreate = true
+				slog.Info("sync: team recreated successfully after name mismatch",
+					"team", grafTeam, "teamID", teamID)
 			} else {
 				slog.Info("sync: team verified", "team", grafTeam, "teamID", teamID)
 			}
@@ -277,10 +278,8 @@ func (w *SyncWorker) syncOnce() error {
 		for id := range desired {
 			if _, exists := current[id]; !exists {
 				slog.Info("sync: adding team member", "team", grafTeam, "teamID", teamID, "userId", id)
-				if aErr := w.grafClient.AddTeamMember(teamID, id); aErr != nil {
+				if aErr := addTeamMemberWithRetry(w.grafClient, teamID, id); aErr != nil {
 					slog.Error("failed to add member to grafana team", "team", grafTeam, "teamID", teamID, "userId", id, "err", aErr)
-				} else {
-					slog.Info("added grafana team member", "team", grafTeam, "teamID", teamID, "userId", id)
 				}
 			}
 		}
@@ -327,14 +326,22 @@ func (w *SyncWorker) syncFolderPermissions(folderName string, fps []grafConfig.F
 			}
 			team = &grafana.Team{ID: teamID, Name: fp.Team}
 		} else {
-			// Verify the team actually exists (search may return phantom entries).
-			if _, vErr := w.grafClient.GetTeam(team.ID); vErr != nil {
+			// Verify the team actually exists and the name matches
+			// (search API may return stale entries or wrong ID after Grafana restart).
+			if teamDetail, vErr := w.grafClient.GetTeam(team.ID); vErr != nil {
 				slog.Warn("sync: folder perm team from search does not exist, recreating",
 					"team", fp.Team, "teamID", team.ID, "err", vErr)
-				w.grafClient.ClearTeamCache(fp.Team)
 				teamID, err2 := w.grafClient.CreateTeam(fp.Team)
 				if err2 != nil {
 					return fmt.Errorf("get/create team after phantom: %w", err2)
+				}
+				team = &grafana.Team{ID: teamID, Name: fp.Team}
+			} else if teamDetail.Name != fp.Team {
+				slog.Warn("sync: folder perm team name mismatch, recreating",
+					"team", fp.Team, "teamID", team.ID, "actualName", teamDetail.Name)
+				teamID, err2 := w.grafClient.CreateTeam(fp.Team)
+				if err2 != nil {
+					return fmt.Errorf("get/create team after name mismatch: %w", err2)
 				}
 				team = &grafana.Team{ID: teamID, Name: fp.Team}
 			}
@@ -351,6 +358,24 @@ func (w *SyncWorker) syncFolderPermissions(folderName string, fps []grafConfig.F
 	}
 
 	slog.Info("synced folder permissions", "folder", folderName, "count", len(newPerms))
+	return nil
+}
+
+// addTeamMemberWithRetry attempts to add a team member with retries for transient
+// errors (e.g. Grafana's RBAC subsystem not fully initialized on fresh startup).
+func addTeamMemberWithRetry(c *grafana.Client, teamID, userID int64) error {
+	backoff := []time.Duration{500 * time.Millisecond, 1 * time.Second}
+	for attempt := 0; attempt <= len(backoff); attempt++ {
+		err := c.AddTeamMember(teamID, userID)
+		if err == nil {
+			return nil
+		}
+		if attempt == len(backoff) {
+			return err
+		}
+		slog.Debug("sync: retrying add team member", "teamID", teamID, "userId", userID, "attempt", attempt, "backoff", backoff[attempt])
+		time.Sleep(backoff[attempt])
+	}
 	return nil
 }
 

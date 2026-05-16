@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	grafConfig "savras/internal/config"
@@ -20,8 +19,6 @@ type Client struct {
 	token      string
 	username   string
 	password   string
-	teamCache  map[string]int64
-	mu         sync.RWMutex
 }
 
 type Team struct {
@@ -62,7 +59,6 @@ func NewClient(baseURL string, cfg *grafConfig.GrafanaConfig) *Client {
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		token:      cfg.APIToken,
-		teamCache:  make(map[string]int64),
 	}
 	if cfg.APIToken == "" {
 		c.username = cfg.AdminUser
@@ -144,9 +140,6 @@ func (c *Client) CreateTeam(name string) (int64, error) {
 	if teamID == 0 {
 		return 0, fmt.Errorf("create team succeeded but response contained no team ID: %+v", resp)
 	}
-	c.mu.Lock()
-	c.teamCache[name] = teamID
-	c.mu.Unlock()
 	return teamID, nil
 }
 
@@ -161,13 +154,6 @@ type teamSearchResult struct {
 }
 
 func (c *Client) GetTeamByName(name string) (*Team, error) {
-	c.mu.RLock()
-	if id, ok := c.teamCache[name]; ok {
-		c.mu.RUnlock()
-		return &Team{ID: id, Name: name}, nil
-	}
-	c.mu.RUnlock()
-
 	escaped := url.QueryEscape(name)
 	req, err := c.newRequest("GET", "/api/teams/search?query="+escaped, nil)
 	if err != nil {
@@ -181,9 +167,6 @@ func (c *Client) GetTeamByName(name string) (*Team, error) {
 	}
 	for _, t := range resp.Teams {
 		if t.Name == name {
-			c.mu.Lock()
-			c.teamCache[name] = t.ID
-			c.mu.Unlock()
 			return &Team{ID: t.ID, Name: t.Name}, nil
 		}
 	}
@@ -309,15 +292,6 @@ func (c *Client) UpdateFolderPermissions(folderUID string, perms []FolderPermiss
 		return err
 	}
 	return c.do(req, nil)
-}
-
-// ClearTeamCache removes a team from the in-memory cache, forcing the next
-// GetTeamByName call to re-query the Grafana search API. Used when a cached
-// team ID is discovered to be stale (phantom entry).
-func (c *Client) ClearTeamCache(name string) {
-	c.mu.Lock()
-	delete(c.teamCache, name)
-	c.mu.Unlock()
 }
 
 func (c *Client) GetTeam(teamID int64) (*Team, error) {

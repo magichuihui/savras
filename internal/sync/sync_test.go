@@ -98,10 +98,6 @@ func (m *mockGrafanaClient) UpdateFolderPermissions(folderUID string, perms []gr
 	return m.updatePermErr
 }
 
-func (m *mockGrafanaClient) ClearTeamCache(name string) {
-	// no-op: mock has no persistent cache between sync cycles
-}
-
 func (m *mockGrafanaClient) GetTeam(teamID int64) (*grafana.Team, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -166,21 +162,6 @@ func TestStartSyncWorker(t *testing.T) {
 		t.Fatal("expected non-nil SyncWorker")
 	}
 	w.Stop()
-}
-
-func TestSyncWorker_Cache(t *testing.T) {
-	c := &cfg.Config{Sync: cfg.SyncConfig{Enabled: false}}
-	w := NewSyncWorker(c, nil)
-	w.mu.Lock()
-	w.cache["kyra"] = 123
-	w.mu.Unlock()
-
-	w.mu.RLock()
-	id, ok := w.cache["kyra"]
-	w.mu.RUnlock()
-	if !ok || id != 123 {
-		t.Fatalf("expected cached ID 123, got %d, ok=%v", id, ok)
-	}
 }
 
 func TestStop_WithoutStart(t *testing.T) {

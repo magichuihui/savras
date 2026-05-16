@@ -153,27 +153,6 @@ func TestCreateTeam(t *testing.T) {
 	if id != 123 {
 		t.Fatalf("expected team ID 123, got %d", id)
 	}
-	// Check cache
-	cached := c.teamCache["test-team"]
-	if cached != 123 {
-		t.Fatalf("expected cached team ID 123, got %d", cached)
-	}
-}
-
-func TestGetTeamByName_FromCache(t *testing.T) {
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient("http://example.com", cfg)
-	c.mu.Lock()
-	c.teamCache["test-team"] = 456
-	c.mu.Unlock()
-
-	team, err := c.GetTeamByName("test-team")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if team.ID != 456 {
-		t.Fatalf("expected team ID 456, got %d", team.ID)
-	}
 }
 
 func TestGetTeamByName_FromAPI(t *testing.T) {
