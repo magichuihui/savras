@@ -19,6 +19,7 @@ type SyncWorker struct {
 	grafClient *grafana.Client
 	trigger    chan struct{}
 	stop       chan struct{}
+	ready      chan struct{} // closed after initial sync completes
 	interval   time.Duration
 	cache      map[string]int64 // login -> Grafana user ID
 	mu         sync.RWMutex
@@ -31,6 +32,7 @@ func NewSyncWorker(cfg *grafConfig.Config, g *grafana.Client) *SyncWorker {
 		grafClient: g,
 		trigger:    make(chan struct{}, 1),
 		stop:       make(chan struct{}),
+		ready:      make(chan struct{}),
 		interval:   cfg.Sync.Interval,
 		cache:      make(map[string]int64),
 	}
@@ -55,6 +57,7 @@ func (w *SyncWorker) Start() {
 		if err := w.syncOnce(); err != nil {
 			slog.Error("sync worker: initial sync failed", "error", err)
 		}
+		close(w.ready)
 		w.loop()
 	}()
 }
@@ -67,6 +70,12 @@ func (w *SyncWorker) Stop() {
 	default:
 		close(w.stop)
 	}
+}
+
+// Ready returns a channel that is closed after the first sync cycle completes.
+// The health check waits on this before considering the service ready.
+func (w *SyncWorker) Ready() <-chan struct{} {
+	return w.ready
 }
 
 // Trigger allows manual triggering of a sync cycle.
@@ -278,55 +287,61 @@ func (w *SyncWorker) syncOnce() error {
 			}
 		}
 	}
-	// Sync folder permissions
+	// Sync folder permissions — group by folder so each folder gets one API call
+	// with all team permissions applied together (last-write-wins bug fix).
+	folderPerms := make(map[string][]grafConfig.FolderPermission)
 	for _, fp := range w.cfg.Sync.FolderPermissions {
-		if err := w.syncFolderPermission(fp); err != nil {
-			slog.Error("failed to sync folder permission", "folder", fp.Folder, "team", fp.Team, "err", err)
+		folderPerms[fp.Folder] = append(folderPerms[fp.Folder], fp)
+	}
+	for folderName, perms := range folderPerms {
+		if err := w.syncFolderPermissions(folderName, perms); err != nil {
+			slog.Error("failed to sync folder permissions", "folder", folderName, "err", err)
 		}
 	}
 
 	return nil
 }
 
-func (w *SyncWorker) syncFolderPermission(fp grafConfig.FolderPermission) error {
-	folder, err := w.grafClient.GetFolderByTitle(fp.Folder)
+func (w *SyncWorker) syncFolderPermissions(folderName string, fps []grafConfig.FolderPermission) error {
+	folder, err := w.grafClient.GetFolderByTitle(folderName)
 	if err != nil {
 		return fmt.Errorf("get folder: %w", err)
 	}
 
-	team, err := w.grafClient.GetTeamByName(fp.Team)
-	if err != nil {
-		teamID, err2 := w.grafClient.CreateTeam(fp.Team)
-		if err2 != nil {
-			return fmt.Errorf("get/create team: %w", err2)
-		}
-		team = &grafana.Team{ID: teamID, Name: fp.Team}
-	} else {
-		// Verify the team actually exists (search may return phantom entries).
-		if _, vErr := w.grafClient.GetTeam(team.ID); vErr != nil {
-			slog.Warn("sync: folder perm team from search does not exist, recreating",
-				"team", fp.Team, "teamID", team.ID, "err", vErr)
-			w.grafClient.ClearTeamCache(fp.Team)
+	var newPerms []grafana.FolderPermission
+	for _, fp := range fps {
+		team, err := w.grafClient.GetTeamByName(fp.Team)
+		if err != nil {
 			teamID, err2 := w.grafClient.CreateTeam(fp.Team)
 			if err2 != nil {
-				return fmt.Errorf("get/create team after phantom: %w", err2)
+				return fmt.Errorf("get/create team %s: %w", fp.Team, err2)
 			}
 			team = &grafana.Team{ID: teamID, Name: fp.Team}
+		} else {
+			// Verify the team actually exists (search may return phantom entries).
+			if _, vErr := w.grafClient.GetTeam(team.ID); vErr != nil {
+				slog.Warn("sync: folder perm team from search does not exist, recreating",
+					"team", fp.Team, "teamID", team.ID, "err", vErr)
+				w.grafClient.ClearTeamCache(fp.Team)
+				teamID, err2 := w.grafClient.CreateTeam(fp.Team)
+				if err2 != nil {
+					return fmt.Errorf("get/create team after phantom: %w", err2)
+				}
+				team = &grafana.Team{ID: teamID, Name: fp.Team}
+			}
 		}
-	}
 
-	newPerms := []grafana.FolderPermission{
-		{
+		newPerms = append(newPerms, grafana.FolderPermission{
 			TeamID:     team.ID,
 			Permission: fp.Permission,
-		},
+		})
 	}
 
 	if err := w.grafClient.UpdateFolderPermissions(folder.UID, newPerms); err != nil {
 		return fmt.Errorf("update folder permissions: %w", err)
 	}
 
-	slog.Info("synced folder permission", "folder", fp.Folder, "team", fp.Team, "permission", fp.Permission)
+	slog.Info("synced folder permissions", "folder", folderName, "count", len(newPerms))
 	return nil
 }
 

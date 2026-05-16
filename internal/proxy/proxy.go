@@ -32,6 +32,15 @@ func SetSyncTriggerFn(fn func(ctx context.Context) error) {
 	syncTriggerFn = fn
 }
 
+// syncReadyFn injection point. The health endpoint checks this before
+// reporting healthy, to avoid serving traffic before initial sync completes.
+var syncReadyFn func() bool
+
+// SetSyncReadyFn sets a function that returns true once initial sync is done.
+func SetSyncReadyFn(fn func() bool) {
+	syncReadyFn = fn
+}
+
 // Initialize a JSON logger for structured logs
 var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{AddSource: true}))
 
@@ -125,11 +134,25 @@ func HeaderInjectionMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// healthHandler exposes a simple health endpoint that checks LDAP and downstream Grafana connectivity.
+// healthHandler exposes a health endpoint. Returns 503 Service Unavailable
+// until the initial sync cycle completes, to avoid serving traffic before
+// team permissions are applied.
 func healthHandler(cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		// If sync is configured but initial sync hasn't completed, not ready.
+		if syncReadyFn != nil && !syncReadyFn() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{
+				"status": "initializing",
+				"reason": "initial sync not yet complete",
+			})
 			return
 		}
 
@@ -142,7 +165,6 @@ func healthHandler(cfg *config.Config) http.HandlerFunc {
 			"grafana": grafOK,
 		}
 
-		w.Header().Set("Content-Type", "application/json")
 		if ldapOK && grafOK {
 			w.WriteHeader(http.StatusOK)
 		} else {

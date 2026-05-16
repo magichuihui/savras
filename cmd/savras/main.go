@@ -16,6 +16,8 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{AddSource: true})))
+
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		slog.Error("failed to load config", "error", err)
@@ -29,6 +31,14 @@ func main() {
 	var worker *sync.SyncWorker
 	if cfg.Sync.Enabled {
 		worker = sync.StartSyncWorker(cfg, grafClient)
+		proxy.SetSyncReadyFn(func() bool {
+			select {
+			case <-worker.Ready():
+				return true
+			default:
+				return false
+			}
+		})
 		proxy.SetSyncTriggerFn(func(ctx context.Context) error {
 			worker.Trigger()
 			return nil
