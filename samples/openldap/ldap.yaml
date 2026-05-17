@@ -1,0 +1,152 @@
+# OpenLDAP for local testing — matches config.example.yaml LDAP settings.
+#
+# Deploy:
+#   kubectl apply -f samples/openldap/ldap.yaml
+#
+# Connect Savras to this LDAP by setting in config.yaml:
+#   ldap:
+#     host: openldap.monitoring.svc.cluster.local
+#     port: 389
+#     bind_dn: "cn=admin,dc=example,dc=com"
+#     bind_password: "ldap-password"
+#     base_dn: "ou=people,dc=example,dc=com"
+#     ...
+#
+# Test users:
+#   testuser / testpass  -> devops
+#   jane    / janepass   -> developer
+
+# Uses --copy-service per osixia/openldap docs so the container copies
+# bootstrap LDIF from the read-only ConfigMap mount to a writable
+# location before processing.
+#
+# The LDIF file is named 99-init.ldif (sorts after the image's default
+# 01-base.ldif) and placed in the base bootstrap ldif directory (not in
+# custom/).  This way the startup script's recursive *.ldif find picks
+# it up exactly once in the "image bootstrap" pass, avoiding duplicate-
+# add errors (LDAP_ALREADY_EXISTS / status 68).
+# Ref: https://github.com/osixia/docker-openldap#seed-ldap-database-with-ldif
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ldap-seed
+  namespace: monitoring
+data:
+  99-init.ldif: |
+    dn: ou=people,dc=example,dc=com
+    objectClass: organizationalUnit
+    ou: people
+
+    dn: uid=testuser,ou=people,dc=example,dc=com
+    objectClass: inetOrgPerson
+    objectClass: posixAccount
+    uid: testuser
+    cn: Test User
+    sn: User
+    uidNumber: 10001
+    gidNumber: 10001
+    homeDirectory: /home/testuser
+    userPassword: testpass
+    mail: testuser@example.com
+
+    dn: uid=jane,ou=people,dc=example,dc=com
+    objectClass: inetOrgPerson
+    objectClass: posixAccount
+    uid: jane
+    cn: Jane Doe
+    sn: Doe
+    uidNumber: 10002
+    gidNumber: 10002
+    homeDirectory: /home/jane
+    userPassword: janepass
+    mail: jane@example.com
+
+    dn: ou=groups,dc=example,dc=com
+    objectClass: organizationalUnit
+    ou: groups
+
+    dn: cn=devops,ou=groups,dc=example,dc=com
+    objectClass: posixGroup
+    cn: devops
+    gidNumber: 20001
+    memberUid: testuser
+
+    dn: cn=developer,ou=groups,dc=example,dc=com
+    objectClass: posixGroup
+    cn: developer
+    gidNumber: 20002
+    memberUid: jane
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openldap
+  namespace: monitoring
+  labels:
+    app: openldap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openldap
+  template:
+    metadata:
+      labels:
+        app: openldap
+    spec:
+      containers:
+        - name: openldap
+          image: osixia/openldap:latest
+          args: ["--copy-service"]
+          ports:
+            - containerPort: 389
+              name: ldap
+          env:
+            - name: LDAP_ORGANISATION
+              value: "Example Org"
+            - name: LDAP_DOMAIN
+              value: "example.com"
+            - name: LDAP_ADMIN_PASSWORD
+              value: "ldap-password"
+            - name: LDAP_BASE_DN
+              value: "dc=example,dc=com"
+          volumeMounts:
+            - name: seed
+              mountPath: /container/service/slapd/assets/config/bootstrap/ldif/99-init.ldif
+              subPath: 99-init.ldif
+              readOnly: true
+          livenessProbe:
+            exec:
+              command:
+                - ldapsearch
+                - -x
+                - -H
+                - ldap://localhost:389
+                - -b
+                - dc=example,dc=com
+                - -D
+                - cn=admin,dc=example,dc=com
+                - -w
+                - ldap-password
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      volumes:
+        - name: seed
+          configMap:
+            name: ldap-seed
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openldap
+  namespace: monitoring
+spec:
+  selector:
+    app: openldap
+  ports:
+    - port: 389
+      targetPort: 389
+      name: ldap

@@ -1,0 +1,53 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: savras-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    server:
+      listen_addr: ":4181"
+      grafana_addr: "http://127.0.0.1:3000"
+
+    auth:
+      jwt_secret: "your-jwt-secret-key-change-in-production"
+      jwt_expiry: "24h"
+      cookie_name: "savras_auth"
+      cookie_secure: false
+      local_admin_username: "admin"
+      local_admin_password: "admin-password"
+
+    ldap:
+      host: "openldap.monitoring.svc.cluster.local"
+      port: 389
+      bind_dn: "cn=admin,dc=example,dc=com"
+      bind_password: "ldap-password"
+      base_dn: "ou=people,dc=example,dc=com"
+      user_attr: "uid"
+      user_filter: "(&(objectClass=posixAccount)(uid=%s))"
+      email_attr: "mail"
+      group_base_dn: "ou=groups,dc=example,dc=com"
+      group_attr: "cn"
+      group_member_attr: "memberUid"
+      group_filter: "(objectClass=posixGroup)"
+
+    sync:
+      enabled: true
+      interval_minutes: 30
+      startup_delay_seconds: 10
+      groups_mapping:
+        - ad_group: "devops"
+          grafana_team: "devops"
+        - ad_group: "developer"
+          grafana_team: "developer"
+      folder_permissions:
+        - folder: "devops"
+          team: "devops"
+          permission: "Admin"
+        - folder: "developer"
+          team: "developer"
+          permission: "Edit"
+        - folder: "developer"
+          team: "devops"
+          permission: "View"

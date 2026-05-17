@@ -105,7 +105,7 @@ make run
 Deploy OpenLDAP with test users matching `config.example.yaml`:
 
 ```bash
-kubectl apply -f samples/ldap.yaml
+kubectl apply -f samples/openldap/ldap.yaml
 ```
 
 This creates in the `monitoring` namespace:
@@ -139,19 +139,26 @@ The LDAP server matches `config.example.yaml` settings:
 
 ### Kubernetes / Helm
 
-Deploy Grafana with auth proxy configuration in your cluster:
+All-in-one deployment with OpenLDAP, Savras ConfigMap, and Grafana:
 
 ```bash
-# Deploy Grafana with Helm (auth proxy pre-configured)
+# Full automated deployment (OpenLDAP + Savras ConfigMap + Grafana + Savras sidecar)
+./samples/grafana/install.sh
+
+# Or step by step:
+# 1. Deploy OpenLDAP
+kubectl apply -f samples/openldap/ldap.yaml
+
+# 2. Create Savras ConfigMap
+kubectl apply -f samples/grafana/configmap.yaml
+
+# 3. Deploy Grafana with Helm (auth proxy pre-configured)
 helm upgrade --install grafana grafana/grafana \
   --namespace monitoring --create-namespace \
-  --values samples/values.yaml
-
-# Then deploy Savras in the same namespace
-# (see samples/install.sh for the full automated script)
+  --values samples/grafana/values.yaml
 ```
 
-The `samples/values.yaml` configures:
+The `samples/grafana/values.yaml` configures:
 - Auth proxy mode with `X-WEBAUTH-USER` / `X-WEBAUTH-EMAIL` headers
 - Auto sign-up so LDAP users are created in Grafana on first login
 - Dashboard sidecar for configmap-based provisioning
