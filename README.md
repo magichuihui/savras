@@ -119,7 +119,7 @@ This creates in the `monitoring` namespace:
 **Test credentials:**
 
 | User | Password | LDAP Group | Grafana Team |
-|---|---|---|---|---|
+|---|---|---|---|
 | `testuser` | `testpass` | devops | devops (Admin) |
 | `jane` | `janepass` | developer | developer (Edit) |
 | `admin` | `admin` | devops (hardcoded) | devops (Admin, no LDAP needed) |
