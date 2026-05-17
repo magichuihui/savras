@@ -12,8 +12,8 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if cfg.Server.ListenAddr != ":8080" {
-		t.Errorf("expected :8080, got %s", cfg.Server.ListenAddr)
+	if cfg.Server.ListenAddr != ":4181" {
+		t.Errorf("expected :4181, got %s", cfg.Server.ListenAddr)
 	}
 	if cfg.Auth.CookieName != "savras_session" {
 		t.Errorf("expected savras_session, got %s", cfg.Auth.CookieName)

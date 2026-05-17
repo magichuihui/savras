@@ -3,15 +3,14 @@
 #
 # Environment variable overrides for sensitive fields (Kubernetes Secrets friendly):
 #   SAVRAS_LDAP_BIND_PASSWORD        -> ldap.bind_password
-#   SAVRAS_GRAFANA_ADMIN_PASSWORD    -> grafana.admin_password
-#   SAVRAS_GRAFANA_API_TOKEN         -> grafana.api_token
 #   SAVRAS_AUTH_JWT_SECRET           -> auth.jwt_secret
 #   SAVRAS_AUTH_JWT_PRIVATE_KEY      -> auth.jwt_private_key
 #   SAVRAS_AUTH_LOCAL_ADMIN_PASSWORD -> auth.local_admin_password
+#   SAVRAS_GRAFANA_API_TOKEN         -> auth.grafana_api_token (alternative to admin password)
 # Env vars take precedence over values in this file.
 
 server:
-  listen_addr: ":8080"
+  listen_addr: ":4181"
   grafana_addr: "http://127.0.0.1:3000"
 
 auth:
@@ -19,50 +18,42 @@ auth:
   jwt_expiry: "24h"
   cookie_name: "savras_auth"
   cookie_secure: false  # set to true in production with HTTPS
-  # Optional: local admin user that bypasses LDAP (e.g. Grafana default admin)
-  # local_admin_username: "admin"
-  # local_admin_password: "admin-password"
+  # Grafana API uses the same credentials as the local admin bypass.
+  # If local_admin_username/password are not set, fall back to grafana_api_token.
+  local_admin_username: "admin"
+  local_admin_password: "admin-password"
+  # grafana_api_token: ""  # alternative to admin credentials for Grafana API
 
 ldap:
   host: "ldap.example.com"
   port: 389
   bind_dn: "cn=admin,dc=example,dc=com"
   bind_password: "ldap-password"
-  base_dn: "ou=people,dc=amyinfo,dc=com"
+  base_dn: "ou=people,dc=example,dc=com"
   user_attr: "uid"
   user_filter: "(&(objectClass=posixAccount)(uid=%s))"
   email_attr: "mail"
-  group_base_dn: "ou=groups,dc=amyinfo,dc=com"
+  group_base_dn: "ou=groups,dc=example,dc=com"
   group_attr: "cn"
   group_member_attr: "memberUid"
   group_filter: "(objectClass=posixGroup)"
-
-grafana:
-  admin_user: "admin"
-  admin_password: "admin"
-  api_token: ""  # Or use admin_user/admin_password
 
 sync:
   enabled: true
   interval_minutes: 30
   startup_delay_seconds: 10
   groups_mapping:
-    - ad_group: "Grafana_Viewers"
-      grafana_team: "Viewers"
-    - ad_group: "Grafana_Editors"
-      grafana_team: "Editors"
-    - ad_group: "Grafana_Admins"
-      grafana_team: "Admins"
+    - ad_group: "devops"
+      grafana_team: "devops"
+    - ad_group: "developer"
+      grafana_team: "developer"
   folder_permissions:
-    - folder: "Production"
-      team: "Admins"
+    - folder: "devops"
+      team: "devops"
       permission: "Admin"
-    - folder: "Staging"
-      team: "Editors"
+    - folder: "developer"
+      team: "developer"
       permission: "Edit"
-    - folder: "Staging"
-      team: "Viewers"
-      permission: "View"
-    - folder: "Public"
-      team: "Viewers"
+    - folder: "developer"
+      team: "devops"
       permission: "View"

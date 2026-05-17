@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	slog "log/slog"
+	"log/slog"
 
 	"savras/internal/auth"
 	"savras/internal/config"
@@ -51,9 +51,6 @@ func SetGrafanaMonitor(m *GrafanaMonitor) {
 	grafanaMonitor = m
 }
 
-// Initialize a JSON logger for structured logs
-var logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{AddSource: true}))
-
 // NewProxyHandler creates the HTTP handler that proxies requests to Grafana
 // while enforcing Savras authentication and header injection.
 func NewProxyHandler(cfg *config.Config) http.Handler {
@@ -67,12 +64,12 @@ func NewProxyHandler(cfg *config.Config) http.Handler {
 	if err != nil {
 		// Fallback to default Grafana address if parsing fails
 		target, _ = url.Parse("http://127.0.0.1:3000")
-		logger.Error("invalid grafana address; falling back to default", "addr", grafanaAddr, "error", err)
+		slog.Error("invalid grafana address; falling back to default", "addr", grafanaAddr, "error", err)
 	}
 
 	rp := httputil.NewSingleHostReverseProxy(target)
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		logger.Error("proxy: failed to proxy request", "target", target, "path", r.URL.Path, "error", err)
+		slog.Error("proxy: failed to proxy request", "target", target, "path", r.URL.Path, "error", err)
 		// Notify the lifecycle monitor so it can enter recovery mode.
 		if grafanaMonitor != nil {
 			grafanaMonitor.OnProxyError()
@@ -120,7 +117,7 @@ func BlockWhenDownMiddleware(next http.Handler) http.Handler {
 				"status": "unavailable",
 				"reason": "Grafana backend is unreachable, try again shortly",
 			})
-			logger.Warn("proxy: blocked request — Grafana backend is down",
+			slog.Warn("proxy: blocked request — Grafana backend is down",
 				"path", r.URL.Path)
 			return
 		}
@@ -136,7 +133,7 @@ func AuthMiddleware(next http.Handler, cfg *config.Config) http.Handler {
 		if err != nil {
 			// Redirect to login if cookie is missing or invalid
 			http.Redirect(w, r, "/login", http.StatusFound)
-			logger.Info("auth: redirect to login due to missing cookie", "path", r.URL.Path)
+			slog.Info("auth: redirect to login due to missing cookie", "path", r.URL.Path)
 			return
 		}
 
@@ -152,13 +149,13 @@ func AuthMiddleware(next http.Handler, cfg *config.Config) http.Handler {
 				SameSite: http.SameSiteLaxMode,
 			})
 			http.Redirect(w, r, "/login", http.StatusFound)
-			logger.Info("auth: redirect to login due to invalid token", "path", r.URL.Path)
+			slog.Info("auth: redirect to login due to invalid token", "path", r.URL.Path)
 			return
 		}
 
 		// Carry claims to downstream middlewares/handlers
 		ctx := context.WithValue(r.Context(), claimsContextKey, claims)
-		logger.Info("auth: user authenticated", "path", r.URL.Path, "user", claims.Username)
+		slog.Info("auth: user authenticated", "path", r.URL.Path, "user", claims.Username)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -244,18 +241,18 @@ func syncTriggerHandler(cfg *config.Config) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		if syncTriggerFn == nil {
 			http.Error(w, "sync trigger not configured", http.StatusNotImplemented)
-			logger.Info("sync trigger requested but not configured")
+			slog.Info("sync trigger requested but not configured")
 			return
 		}
 		if err := syncTriggerFn(r.Context()); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			logger.Info("sync trigger failed", "error", err.Error())
+			slog.Info("sync trigger failed", "error", err.Error())
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
 		json.NewEncoder(w).Encode(map[string]string{"status": "triggered"})
-		logger.Info("sync trigger dispatched")
+		slog.Info("sync trigger dispatched")
 	}
 }
 
@@ -268,7 +265,7 @@ func checkLDAPConnectivity() bool {
 	}
 	conn, err := net.DialTimeout("tcp", ldapAddr, 2*time.Second)
 	if err != nil {
-		logger.Info("ldap connectivity check failed", "addr", ldapAddr, "error", err)
+		slog.Info("ldap connectivity check failed", "addr", ldapAddr, "error", err)
 		return false
 	}
 	_ = conn.Close()
@@ -284,7 +281,7 @@ func checkGrafanaConnectivity(cfg *config.Config) bool {
 	client := http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get(grafanaAddr)
 	if err != nil {
-		logger.Info("grafana connectivity check failed", "addr", grafanaAddr, "error", err)
+		slog.Info("grafana connectivity check failed", "addr", grafanaAddr, "error", err)
 		return false
 	}
 	_ = resp.Body.Close()
@@ -500,6 +497,8 @@ body::before{
 </html>
 `
 
+var loginTmpl = template.Must(template.New("login").Parse(loginHTML))
+
 type loginData struct {
 	Error string
 }
@@ -507,8 +506,7 @@ type loginData struct {
 func loginHandler(cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			tmpl, _ := template.New("login").Parse(loginHTML)
-			tmpl.Execute(w, loginData{})
+			loginTmpl.Execute(w, loginData{})
 			return
 		}
 
@@ -522,22 +520,20 @@ func loginHandler(cfg *config.Config) http.HandlerFunc {
 		password := r.FormValue("password")
 
 		if username == "" || password == "" {
-			tmpl, _ := template.New("login").Parse(loginHTML)
-			tmpl.Execute(w, loginData{Error: "Username and password are required"})
+			loginTmpl.Execute(w, loginData{Error: "Username and password are required"})
 			return
 		}
 
 		user, err := auth.Authenticate(username, password)
 		if err != nil || user == nil {
-			logger.Info("auth: login failed", "user", username, "error", err)
-			tmpl, _ := template.New("login").Parse(loginHTML)
-			tmpl.Execute(w, loginData{Error: "Invalid username or password"})
+			slog.Info("auth: login failed", "user", username, "error", err)
+			loginTmpl.Execute(w, loginData{Error: "Invalid username or password"})
 			return
 		}
 
 		token, err := auth.GenerateJWT(user)
 		if err != nil {
-			logger.Error("auth: failed to generate JWT", "error", err)
+			slog.Error("auth: failed to generate JWT", "error", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -554,7 +550,7 @@ func loginHandler(cfg *config.Config) http.HandlerFunc {
 		if syncTriggerFn != nil {
 			go func() {
 				if err := syncTriggerFn(context.Background()); err != nil {
-					logger.Error("auth: post-login sync failed", "user", username, "error", err)
+					slog.Error("auth: post-login sync failed", "user", username, "error", err)
 				}
 			}()
 		}

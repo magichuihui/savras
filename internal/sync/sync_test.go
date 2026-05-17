@@ -256,7 +256,7 @@ func TestAddTeamMemberWithRetry_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	gc := grafana.NewClient(server.URL, &cfg.GrafanaConfig{})
+	gc := grafana.NewClient(server.URL, "", "", "")
 	err := addTeamMemberWithRetry(gc, 1, 1)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -269,7 +269,7 @@ func TestAddTeamMemberWithRetry_RetriesExhausted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	gc := grafana.NewClient(server.URL, &cfg.GrafanaConfig{})
+	gc := grafana.NewClient(server.URL, "", "", "")
 	err := addTeamMemberWithRetry(gc, 1, 1)
 	if err == nil {
 		t.Fatal("expected error after retries exhausted")

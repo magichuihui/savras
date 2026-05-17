@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	slog "log/slog"
+	"log/slog"
 )
 
 // GrafanaState represents the lifecycle state of the Grafana backend.
@@ -161,7 +161,11 @@ func (m *GrafanaMonitor) probeLoop() {
 			slog.Warn("grafana: probe failed, backing off",
 				"error", err, "next_attempt", interval)
 			interval = m.nextInterval(interval)
-			time.Sleep(interval)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+			}
 			continue
 		}
 		resp.Body.Close()
@@ -170,7 +174,11 @@ func (m *GrafanaMonitor) probeLoop() {
 			slog.Warn("grafana: probe returned non-200, backing off",
 				"status", resp.StatusCode, "next_attempt", interval)
 			interval = m.nextInterval(interval)
-			time.Sleep(interval)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+			}
 			continue
 		}
 

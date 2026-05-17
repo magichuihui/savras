@@ -86,6 +86,40 @@ func getPrivateKey() (*rsa.PrivateKey, error) {
 	return parsed, nil
 }
 
+func ldapSearchEntry(username string) (*ldap.Entry, error) {
+	if globalCfg == nil {
+		return nil, errors.New("auth: config not initialized")
+	}
+	conn, err := ldap.DialURL(globalCfg.LDAP.URL())
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	if globalCfg.LDAP.BindDN != "" {
+		if err := conn.Bind(globalCfg.LDAP.BindDN, globalCfg.LDAP.BindPassword); err != nil {
+			return nil, err
+		}
+	}
+
+	attr := globalCfg.LDAP.UserAttr
+	if attr == "" {
+		attr = "sAMAccountName"
+	}
+
+	filter := fmt.Sprintf(globalCfg.LDAP.UserFilter, ldap.EscapeFilter(username))
+	sr, err := conn.Search(ldap.NewSearchRequest(
+		globalCfg.LDAP.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,
+		0, 0, false, filter, []string{"dn", globalCfg.LDAP.EmailAttr, "memberOf"}, nil))
+	if err != nil {
+		return nil, err
+	}
+	if len(sr.Entries) == 0 {
+		return nil, errors.New("auth: user not found")
+	}
+	return sr.Entries[0], nil
+}
+
 // Authenticate performs LDAP bind validation for the given username/password.
 // If a local admin user is configured, it checks those credentials first.
 func Authenticate(username, password string) (*AuthResult, error) {
@@ -95,8 +129,14 @@ func Authenticate(username, password string) (*AuthResult, error) {
 
 	if globalCfg.Auth.LocalAdminUsername != "" && globalCfg.Auth.LocalAdminPassword != "" {
 		if username == globalCfg.Auth.LocalAdminUsername && password == globalCfg.Auth.LocalAdminPassword {
-			return &AuthResult{Username: username, Groups: []string{"Grafana_Admins"}}, nil
+			// local admin bypass — no LDAP groups; sync handles team membership separately
+			return &AuthResult{Username: username}, nil
 		}
+	}
+
+	entry, err := ldapSearchEntry(username)
+	if err != nil {
+		return nil, err
 	}
 
 	conn, err := ldap.DialURL(globalCfg.LDAP.URL())
@@ -104,68 +144,23 @@ func Authenticate(username, password string) (*AuthResult, error) {
 		return nil, err
 	}
 	defer conn.Close()
-
-	if globalCfg.LDAP.BindDN != "" {
-		if err := conn.Bind(globalCfg.LDAP.BindDN, globalCfg.LDAP.BindPassword); err != nil {
-			return nil, err
-		}
-	}
-
-	attr := globalCfg.LDAP.UserAttr
-	if attr == "" {
-		attr = "sAMAccountName"
-	}
-
-	filter := fmt.Sprintf(globalCfg.LDAP.UserFilter, ldap.EscapeFilter(username))
-	sr, err := conn.Search(ldap.NewSearchRequest(
-		globalCfg.LDAP.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,
-		0, 0, false, filter, []string{"dn", globalCfg.LDAP.EmailAttr, "memberOf"}, nil))
-	if err != nil {
+	if err := conn.Bind(entry.DN, password); err != nil {
 		return nil, err
 	}
-	if len(sr.Entries) == 0 {
-		return nil, errors.New("auth: user not found")
-	}
-	userDN := sr.Entries[0].DN
-	if err := conn.Bind(userDN, password); err != nil {
-		return nil, err
-	}
-	email := sr.Entries[0].GetAttributeValue(globalCfg.LDAP.EmailAttr)
-	groups := sr.Entries[0].GetAttributeValues("memberOf")
+
+	email := entry.GetAttributeValue(globalCfg.LDAP.EmailAttr)
+	groups := entry.GetAttributeValues("memberOf")
 	return &AuthResult{Username: username, Email: email, Groups: groups}, nil
 }
 
 // GetUserInfo retrieves basic user information from LDAP without authenticating
 func GetUserInfo(username string) (*AuthResult, error) {
-	if globalCfg == nil {
-		return nil, errors.New("auth: config not initialized")
-	}
-	conn, err := ldap.DialURL(globalCfg.LDAP.URL())
+	entry, err := ldapSearchEntry(username)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
-	if globalCfg.LDAP.BindDN != "" {
-		if err := conn.Bind(globalCfg.LDAP.BindDN, globalCfg.LDAP.BindPassword); err != nil {
-			return nil, err
-		}
-	}
-	attr := globalCfg.LDAP.UserAttr
-	if attr == "" {
-		attr = "sAMAccountName"
-	}
-	filter := fmt.Sprintf(globalCfg.LDAP.UserFilter, ldap.EscapeFilter(username))
-	sr, err := conn.Search(ldap.NewSearchRequest(
-		globalCfg.LDAP.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,
-		0, 0, false, filter, []string{"dn", globalCfg.LDAP.EmailAttr, "memberOf"}, nil))
-	if err != nil {
-		return nil, err
-	}
-	if len(sr.Entries) == 0 {
-		return nil, errors.New("auth: user not found")
-	}
-	email := sr.Entries[0].GetAttributeValue(globalCfg.LDAP.EmailAttr)
-	groups := sr.Entries[0].GetAttributeValues("memberOf")
+	email := entry.GetAttributeValue(globalCfg.LDAP.EmailAttr)
+	groups := entry.GetAttributeValues("memberOf")
 	return &AuthResult{Username: username, Email: email, Groups: groups}, nil
 }
 

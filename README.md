@@ -32,7 +32,7 @@ graph TB
         AUTH --> CONFIG
     end
 
-    USER -- HTTPS :8080 --> PROXY
+    USER -- HTTP :4181 --> PROXY
     PROXY -- header injection + reverse proxy --> GRAFANA
     AUTH -- LDAP bind/search --> LDAP
     SYNC -- HTTP API --> GRAFANA
@@ -72,80 +72,6 @@ sequenceDiagram
     G-->>B: Grafana page
 ```
 
-### Middleware Chain
-
-```mermaid
-graph LR
-    REQ[Incoming Request] --> BLOCK[BlockWhenDown<br/>503 if Grafana down]
-    BLOCK --> MUX{Path?}
-
-    MUX -->|health| H[healthHandler]
-    MUX -->|sync trigger| S1[syncTriggerHandler]
-    MUX -->|login| L[loginHandler]
-    MUX -->|logout| LO[logoutHandler]
-
-    MUX -->|everything else| AUTH_M[AuthMiddleware<br/>validate JWT]
-    AUTH_M -->|no cookie| LOGIN_R[302 to /login]
-    AUTH_M -->|invalid token| CLEAR[clear cookie, 302 to /login]
-    AUTH_M -->|valid| HEADER[HeaderInjection<br/>X-WEBAUTH headers]
-    HEADER --> RBAC[RBACMiddleware<br/>placeholder]
-    RBAC --> RP[Reverse Proxy to Grafana]
-```
-
-### Grafana Lifecycle Monitor
-
-```mermaid
-stateDiagram-v2
-    [*] --> Up
-    Up --> Down: proxy error or health probe fail
-    Down --> Up: exponential backoff probe succeeds
-
-    state Up {
-        [*] --> Serving
-        Serving --> ProbeBG: every 30s GET /api/health
-        ProbeBG --> Serving: 2xx
-        ProbeBG --> Down: error
-    }
-
-    state Down {
-        [*] --> Blocked
-        Blocked --> Probing: backoff 1s->10s + jitter
-        Probing --> Recovered: /api/health 2xx
-        Probing --> Probing: retry
-        Recovered --> Up: callback: sync + invalidate tokens
-    }
-```
-
-### Sync Triggers
-
-```mermaid
-graph LR
-    subgraph Triggers
-        T1[SyncWorker timer<br/>every N minutes]
-        T2[Grafana recovery<br/>monitor.onRecovery]
-        T3[Manual POST<br/>/-/savras/sync/trigger]
-        T4[Post-login<br/>goroutine]
-    end
-
-    subgraph Queue
-        Q[SyncQueue<br/>chan size 1<br/>coalesces rapid triggers]
-    end
-
-    subgraph Execution
-        SW[syncOnce<br/>mutex-serialized]
-    end
-
-    T1 --> SW
-    T2 --> SW
-    T3 --> Q --> SW
-    T4 --> Q --> SW
-
-    SW --> A[LDAP: search groups]
-    SW --> B[Grafana API:<br/>lookup/create teams]
-    SW --> C[Grafana API:<br/>sync team members]
-    SW --> D[Grafana API:<br/>sync folder permissions]
-```
-
 ## Features
 
 - Active Directory LDAP authentication
@@ -168,9 +94,95 @@ cp config.example.yaml config.yaml
 # 2. Run directly
 make run
 
-# 3. Login at http://localhost:8080
+# 3. Login at http://localhost:4181
 # Grafana must be configured to use auth proxy with headers
 ```
+
+## Testing & Local Development
+
+### Test LDAP (Kubernetes)
+
+Deploy OpenLDAP with test users matching `config.example.yaml`:
+
+```bash
+kubectl apply -f samples/ldap.yaml
+```
+
+This creates in the `monitoring` namespace:
+
+| Resource | Name | Purpose |
+|---|---|---|
+| **ConfigMap** | `ldap-seed` | LDIF bootstrap data (users & groups) |
+| **Deployment** | `openldap` | OpenLDAP server (osixia/openldap) |
+| **Service** | `openldap` | Exposes port 389 within the cluster |
+
+**Test credentials:**
+
+| User | Password | LDAP Group | Grafana Team |
+|---|---|---|---|---|
+| `testuser` | `testpass` | devops | devops (Admin) |
+| `jane` | `janepass` | developer | developer (Edit) |
+| `admin` | `admin` | devops (hardcoded) | devops (Admin, no LDAP needed) |
+
+The LDAP server matches `config.example.yaml` settings:
+
+| Config Key | Value |
+|---|---|
+| `ldap.host` | `openldap.monitoring.svc.cluster.local` |
+| `ldap.port` | `389` |
+| `ldap.bind_dn` | `cn=admin,dc=example,dc=com` |
+| `ldap.bind_password` | `ldap-password` |
+| `ldap.base_dn` | `ou=people,dc=example,dc=com` |
+| `ldap.group_base_dn` | `ou=groups,dc=example,dc=com` |
+
+> **Tip:** For local development without a cluster, run Savras with `make run` and update `config.yaml` to point `ldap.host` at a reachable LDAP server.
+
+### Kubernetes / Helm
+
+Deploy Grafana with auth proxy configuration in your cluster:
+
+```bash
+# Deploy Grafana with Helm (auth proxy pre-configured)
+helm upgrade --install grafana grafana/grafana \
+  --namespace monitoring --create-namespace \
+  --values samples/values.yaml
+
+# Then deploy Savras in the same namespace
+# (see samples/install.sh for the full automated script)
+```
+
+The `samples/values.yaml` configures:
+- Auth proxy mode with `X-WEBAUTH-USER` / `X-WEBAUTH-EMAIL` headers
+- Auto sign-up so LDAP users are created in Grafana on first login
+- Dashboard sidecar for configmap-based provisioning
+- Post-start lifecycle hook that triggers an initial sync after Grafana starts
+
+### Testing the Full Flow
+
+Once the stack is running, verify end-to-end:
+
+```bash
+# 1. Health check — should return 200
+curl -s http://localhost:4181/-/savras/health | jq .
+
+# 2. Login as testuser (LDAP auth)
+curl -s -v -X POST http://localhost:4181/login \
+  -d "username=testuser&password=testpass" \
+  -c /tmp/savras-cookies.txt 2>&1 | grep -E "(Location|Set-Cookie)"
+
+# 3. Access Grafana through Savras with the cookie
+curl -s -o /dev/null -w "%{http_code}" http://localhost:4181/ \
+  -b /tmp/savras-cookies.txt
+# Should return 200 or 302 (Grafana redirect)
+
+# 4. Trigger a sync (if sync is enabled)
+curl -s -X POST http://localhost:4181/-/savras/sync/trigger
+
+# 5. Logout
+curl -s -v http://localhost:4181/logout -c /tmp/savras-cookies.txt 2>&1
+```
+
+Or open `http://localhost:4181` in a browser — you should see the Grafana login page styled by Savras. Log in with `testuser` / `testpass` to be proxied into Grafana as an admin.
 
 ## Building
 
@@ -181,25 +193,31 @@ make build
 # Cross-compile for Linux (amd64 + arm64)
 make build-all
 
+# Docker image
+make docker-build
+
+# Multi-arch Docker image
+make docker-buildx
+
 # Or use Go directly
 go build -o savras ./cmd/savras
 ```
 
 ## Configuration
 
-See config.example.yaml for all options. Key settings:
-- LDAP server connection
-- Grafana API credentials
-- JWT secret for token signing
-- Sync interval and group mappings
-- Folder permissions: assign folder access to teams with specific permission levels
+See `config.example.yaml` for all options. Key sections:
+
+- **`server`** — listen address and Grafana backend URL
+- **`auth`** — JWT secret/expiry, cookie settings, admin credentials (used for both LDAP bypass and Grafana API auth)
+- **`ldap`** — LDAP server connection, bind credentials, search filters
+- **`sync`** — sync interval, group mappings, folder permissions
 
 Sensitive fields (passwords, tokens, keys) can be overridden via environment variables,
 which is useful when deploying with Kubernetes Secrets:
 
 ```bash
 export SAVRAS_LDAP_BIND_PASSWORD=secret
-export SAVRAS_GRAFANA_ADMIN_PASSWORD=admin
+export SAVRAS_AUTH_LOCAL_ADMIN_PASSWORD=admin
 export SAVRAS_AUTH_JWT_SECRET=my-jwt-secret
 make run
 ```
@@ -207,56 +225,48 @@ make run
 | Environment Variable | Overrides |
 |---|---|
 | `SAVRAS_LDAP_BIND_PASSWORD` | `ldap.bind_password` |
-| `SAVRAS_GRAFANA_ADMIN_PASSWORD` | `grafana.admin_password` |
-| `SAVRAS_GRAFANA_API_TOKEN` | `grafana.api_token` |
 | `SAVRAS_AUTH_JWT_SECRET` | `auth.jwt_secret` |
 | `SAVRAS_AUTH_JWT_PRIVATE_KEY` | `auth.jwt_private_key` |
 | `SAVRAS_AUTH_LOCAL_ADMIN_PASSWORD` | `auth.local_admin_password` |
+| `SAVRAS_GRAFANA_API_TOKEN` | `auth.grafana_api_token` |
 
 Env vars take precedence over values in config.yaml.
 
 ## Endpoints
 
-- `/-/savras/health` - Health check
-- `POST /-/savras/sync/trigger` - Manual sync trigger
-- All other routes proxied to Grafana with auth
+| Path | Method | Purpose |
+|---|---|---|
+| `/-/savras/health` | GET | Health check — reflects LDAP + Grafana connectivity |
+| `/-/savras/sync/trigger` | POST | Trigger an AD-to-Grafana team sync |
+| `/-/savras/logout` | GET | Clear Savras session cookie |
+| `/login` | GET/POST | Login form (GET) and LDAP auth (POST) |
+| `/logout` | GET | Grafana logout — clears Savras cookie + proxies to Grafana |
+| `/api/auth/logout` | GET | Same as above (Grafana API logout path) |
+| `/` (all other routes) | * | Proxied to Grafana with auth + header injection |
 
 ## Docker
-
-### Build Locally
-
-```bash
-make docker-build
-docker run -v $(pwd)/config.yaml:/etc/savras/config.yaml -p 8080:8080 savras
-```
-
-### Multi-arch Build
-
-```bash
-make docker-buildx
-```
 
 ### GitHub Container Registry
 
 Published automatically on every release (`v*` tag push):
 
 ```bash
-docker pull ghcr.io/magichuihui/savras:v0.0.1
+docker pull ghcr.io/magichuihui/savras:v0.1.1
 ```
 
 Images are multi-arch (linux/amd64, linux/arm64) and tagged with the full version
-and major.minor (e.g. `v0.0.1`, `v0.0`).
+and major.minor (e.g. `v0.1.1`, `v0.1`).
 
 ## Development
 
 ```bash
-make fmt      # format code
-make vet      # static analysis
-make test     # run all tests with race detector
+make fmt         # format code
+make vet         # static analysis
+make test        # run all tests with race detector
 make test-cover  # coverage report
-make lint     # staticcheck
-make tidy     # tidy go modules
-make clean    # remove build artifacts
+make lint        # staticcheck
+make tidy        # tidy go modules
+make clean       # remove build artifacts
 ```
 
 ## Release
@@ -270,4 +280,4 @@ git push origin v0.1.0
 
 This builds binaries for all platforms (linux/darwin/windows, amd64/arm64),
 uploads them to the GitHub Release, and publishes a multi-arch Docker image
-to `ghcr.io/magichuihui/savras`.
+to `ghcr.io/magichuihui/savras`. See `.github/workflows/release.yml` for details.

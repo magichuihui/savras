@@ -9,8 +9,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	grafConfig "savras/internal/config"
 )
 
 type Client struct {
@@ -54,15 +52,15 @@ type FolderPermission struct {
 	Permission string `json:"permission"`
 }
 
-func NewClient(baseURL string, cfg *grafConfig.GrafanaConfig) *Client {
+func NewClient(baseURL string, username, password, apiToken string) *Client {
 	c := &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{Timeout: 15 * time.Second},
-		token:      cfg.APIToken,
+		token:      apiToken,
 	}
-	if cfg.APIToken == "" {
-		c.username = cfg.AdminUser
-		c.password = cfg.AdminPassword
+	if apiToken == "" {
+		c.username = username
+		c.password = password
 	}
 	return c
 }
@@ -109,14 +107,24 @@ func (c *Client) do(req *http.Request, v interface{}) error {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	dec := json.NewDecoder(resp.Body)
-	if err := dec.Decode(v); err != nil {
-		if err == io.EOF {
-			return nil
-		}
-		return err
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// doRaw is like do but returns the raw response body, for APIs with
+// variable response formats that cannot use a single decode target.
+func (c *Client) doRaw(req *http.Request) ([]byte, error) {
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", req.Method, req.URL.RequestURI(), err)
 	}
-	return nil
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("grafana API error (%s %s, status %d): %s",
+			req.Method, req.URL.RequestURI(), resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return io.ReadAll(resp.Body)
 }
 
 func (c *Client) CreateTeam(name string) (int64, error) {
@@ -205,18 +213,7 @@ func (c *Client) GetTeamMembers(teamID int64) ([]TeamMember, error) {
 		return nil, err
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("grafana API error (%s %s, status %d): %s", req.Method, req.URL.RequestURI(), resp.StatusCode, strings.TrimSpace(string(b)))
-	}
-
-	body, err := io.ReadAll(resp.Body)
+	body, err := c.doRaw(req)
 	if err != nil {
 		return nil, err
 	}

@@ -7,13 +7,10 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	grafConfig "savras/internal/config"
 )
 
 func TestNewClient_WithAPIToken(t *testing.T) {
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok123"}
-	c := NewClient("http://example.com", cfg)
+	c := NewClient("http://example.com", "", "", "tok123")
 	if c == nil {
 		t.Fatal("expected non-nil Grafana client")
 	}
@@ -26,8 +23,7 @@ func TestNewClient_WithAPIToken(t *testing.T) {
 }
 
 func TestNewClient_WithAdminCredentials(t *testing.T) {
-	cfg := &grafConfig.GrafanaConfig{APIToken: "", AdminUser: "admin", AdminPassword: "pass"}
-	c := NewClient("http://example.com", cfg)
+	c := NewClient("http://example.com", "admin", "pass", "")
 	if c == nil {
 		t.Fatal("expected non-nil Grafana client")
 	}
@@ -40,8 +36,7 @@ func TestNewClient_WithAdminCredentials(t *testing.T) {
 }
 
 func TestNewRequest_WithToken(t *testing.T) {
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok123"}
-	c := NewClient("http://example.com", cfg)
+	c := NewClient("http://example.com", "", "", "tok123")
 	req, err := c.newRequest("GET", "/api/teams", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -52,8 +47,7 @@ func TestNewRequest_WithToken(t *testing.T) {
 }
 
 func TestNewRequest_WithBasicAuth(t *testing.T) {
-	cfg := &grafConfig.GrafanaConfig{AdminUser: "admin", AdminPassword: "pass"}
-	c := NewClient("http://example.com", cfg)
+	c := NewClient("http://example.com", "admin", "pass", "")
 	req, err := c.newRequest("GET", "/api/teams", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -65,8 +59,7 @@ func TestNewRequest_WithBasicAuth(t *testing.T) {
 }
 
 func TestNewRequest_WithPayload(t *testing.T) {
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient("http://example.com", cfg)
+	c := NewClient("http://example.com", "", "", "tok")
 	payload := map[string]string{"name": "test-team"}
 	req, err := c.newRequest("POST", "/api/teams", payload)
 	if err != nil {
@@ -87,8 +80,7 @@ func TestDo_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	req, _ := c.newRequest("GET", "/api/test", nil)
 	var resp map[string]string
 	err := c.do(req, &resp)
@@ -107,8 +99,7 @@ func TestDo_ErrorStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	req, _ := c.newRequest("GET", "/api/test", nil)
 	err := c.do(req, nil)
 	if err == nil {
@@ -125,8 +116,7 @@ func TestDo_NoResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	req, _ := c.newRequest("DELETE", "/api/test", nil)
 	err := c.do(req, nil)
 	if err != nil {
@@ -144,8 +134,7 @@ func TestCreateTeam(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	id, err := c.CreateTeam("test-team")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -166,8 +155,7 @@ func TestGetTeamByName_FromAPI(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	team, err := c.GetTeamByName("test-team")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -184,8 +172,7 @@ func TestGetTeamByName_NotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	_, err := c.GetTeamByName("non-existent")
 	if err == nil {
 		t.Fatal("expected error")
@@ -204,8 +191,7 @@ func TestAddTeamMember(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	err := c.AddTeamMember(123, 456)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -221,8 +207,7 @@ func TestRemoveTeamMember(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	err := c.RemoveTeamMember(123, 456)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -238,8 +223,7 @@ func TestGetTeamMembers_Format1(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	members, err := c.GetTeamMembers(100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -250,9 +234,7 @@ func TestGetTeamMembers_Format1(t *testing.T) {
 }
 
 func TestGetTeamMembers_Format2(t *testing.T) {
-	// Test the alternate response format with wrapper
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// First call fails for direct array, should fallback to wrapper
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"members": []map[string]interface{}{
@@ -262,8 +244,7 @@ func TestGetTeamMembers_Format2(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	members, err := c.GetTeamMembers(100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -282,8 +263,7 @@ func TestGetFolderByTitle(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	folder, err := c.GetFolderByTitle("Test Folder")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -300,8 +280,7 @@ func TestGetFolderByTitle_NotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	_, err := c.GetFolderByTitle("Non-existent")
 	if err == nil {
 		t.Fatal("expected error")
@@ -317,8 +296,7 @@ func TestUpdateFolderPermissions(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	perms := []FolderPermission{
 		{TeamID: 100, Permission: "View"},
 	}
@@ -329,15 +307,13 @@ func TestUpdateFolderPermissions(t *testing.T) {
 }
 
 func TestGetTeam(t *testing.T) {
-	// Grafana v12's GET /api/teams/{id} returns TeamDTO with "id" (not "teamId").
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]interface{}{"id": 123, "uid": "abc", "name": "test-team"})
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	team, err := c.GetTeam(123)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -348,16 +324,14 @@ func TestGetTeam(t *testing.T) {
 }
 
 func TestNewClient_TrimURL(t *testing.T) {
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient("http://example.com/", cfg)
+	c := NewClient("http://example.com/", "", "", "tok")
 	if c.baseURL != "http://example.com" {
 		t.Fatalf("expected trimmed URL, got %q", c.baseURL)
 	}
 }
 
 func TestClient_HTTPClientTimeout(t *testing.T) {
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient("http://example.com", cfg)
+	c := NewClient("http://example.com", "", "", "tok")
 	if c.httpClient.Timeout != 15*time.Second {
 		t.Fatalf("expected timeout 15s, got %v", c.httpClient.Timeout)
 	}
@@ -378,8 +352,7 @@ func TestLookupUser(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	user, err := c.LookupUser("testuser")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -395,8 +368,7 @@ func TestLookupUser_NotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &grafConfig.GrafanaConfig{APIToken: "tok"}
-	c := NewClient(server.URL, cfg)
+	c := NewClient(server.URL, "", "", "tok")
 	_, err := c.LookupUser("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for not found user")

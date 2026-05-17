@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"savras/internal/auth"
 	"savras/internal/config"
@@ -26,7 +27,10 @@ func main() {
 
 	auth.Init(cfg)
 
-	grafClient := grafana.NewClient(cfg.Server.GrafanaAddr, &cfg.Grafana)
+	grafClient := grafana.NewClient(cfg.Server.GrafanaAddr,
+		cfg.Auth.LocalAdminUsername,
+		cfg.Auth.LocalAdminPassword,
+		cfg.Auth.GrafanaAPIToken)
 
 	var worker *sync.SyncWorker
 	if cfg.Sync.Enabled {
@@ -89,6 +93,15 @@ func main() {
 
 	<-sig
 	slog.Info("shutting down")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("server shutdown error", "error", err)
+	}
+
+	monitor.Stop()
 	if worker != nil {
 		worker.Stop()
 	}

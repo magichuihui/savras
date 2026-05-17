@@ -13,7 +13,6 @@ type Config struct {
 	Server  ServerConfig  `mapstructure:"server"`
 	Auth    AuthConfig    `mapstructure:"auth"`
 	LDAP    LDAPConfig    `mapstructure:"ldap"`
-	Grafana GrafanaConfig `mapstructure:"grafana"`
 	Sync    SyncConfig    `mapstructure:"sync"`
 }
 
@@ -31,6 +30,7 @@ type AuthConfig struct {
 	JwtPrivateKey      string        `mapstructure:"jwt_private_key"`
 	LocalAdminUsername string        `mapstructure:"local_admin_username"`
 	LocalAdminPassword string        `mapstructure:"local_admin_password"`
+	GrafanaAPIToken    string        `mapstructure:"grafana_api_token"`
 }
 
 type LDAPConfig struct {
@@ -50,12 +50,6 @@ type LDAPConfig struct {
 
 func (l *LDAPConfig) URL() string {
 	return fmt.Sprintf("ldap://%s:%d", l.Host, l.Port)
-}
-
-type GrafanaConfig struct {
-	AdminUser     string `mapstructure:"admin_user"`
-	AdminPassword string `mapstructure:"admin_password"`
-	APIToken      string `mapstructure:"api_token"`
 }
 
 type GroupMapping struct {
@@ -94,7 +88,7 @@ func LoadConfig() (*Config, error) {
 	v.AutomaticEnv()
 
 	// Defaults
-	v.SetDefault("server.listen_addr", ":8080")
+	v.SetDefault("server.listen_addr", ":4181")
 	v.SetDefault("server.grafana_addr", "http://localhost:3000")
 	v.SetDefault("auth.cookie_name", "savras_session")
 	v.SetDefault("auth.cookie_secure", false)
@@ -120,12 +114,6 @@ func LoadConfig() (*Config, error) {
 	if v := os.Getenv("SAVRAS_LDAP_BIND_PASSWORD"); v != "" {
 		cfg.LDAP.BindPassword = v
 	}
-	if v := os.Getenv("SAVRAS_GRAFANA_ADMIN_PASSWORD"); v != "" {
-		cfg.Grafana.AdminPassword = v
-	}
-	if v := os.Getenv("SAVRAS_GRAFANA_API_TOKEN"); v != "" {
-		cfg.Grafana.APIToken = v
-	}
 	if v := os.Getenv("SAVRAS_AUTH_JWT_SECRET"); v != "" {
 		cfg.Auth.JwtSecret = v
 	}
@@ -134,6 +122,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if v := os.Getenv("SAVRAS_AUTH_LOCAL_ADMIN_PASSWORD"); v != "" {
 		cfg.Auth.LocalAdminPassword = v
+	}
+	if v := os.Getenv("SAVRAS_GRAFANA_API_TOKEN"); v != "" {
+		cfg.Auth.GrafanaAPIToken = v
 	}
 
 	// Post-process durations

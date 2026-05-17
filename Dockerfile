@@ -13,6 +13,6 @@ FROM gcr.io/distroless/static-debian12
 COPY --from=builder /app/savras /savras
 COPY --from=builder /app/config.example.yaml /etc/savras/config.yaml
 
-EXPOSE 8080
+EXPOSE 4181
 
 ENTRYPOINT ["/savras"]

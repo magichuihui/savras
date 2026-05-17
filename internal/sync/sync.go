@@ -108,6 +108,42 @@ func (w *SyncWorker) loop() {
 	}
 }
 
+// resolveTeam looks up a Grafana team by name, creating it if it doesn't exist.
+// It also verifies the team actually exists via the detail API to handle stale
+// search index entries (phantom teams) and name mismatches after Grafana restart.
+func (w *SyncWorker) resolveTeam(name string) (int64, error) {
+	team, err := w.grafClient.GetTeamByName(name)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			id, cErr := w.grafClient.CreateTeam(name)
+			if cErr != nil {
+				return 0, fmt.Errorf("create team: %w", cErr)
+			}
+			return id, nil
+		}
+		return 0, fmt.Errorf("get team: %w", err)
+	}
+
+	if teamDetail, vErr := w.grafClient.GetTeam(team.ID); vErr != nil {
+		slog.Warn("sync: team from search does not exist, recreating",
+			"team", name, "teamID", team.ID, "err", vErr)
+		id, cErr := w.grafClient.CreateTeam(name)
+		if cErr != nil {
+			return 0, fmt.Errorf("recreate team after phantom: %w", cErr)
+		}
+		return id, nil
+	} else if teamDetail.Name != name {
+		slog.Warn("sync: team name mismatch, recreating",
+			"team", name, "teamID", team.ID, "actualName", teamDetail.Name)
+		id, cErr := w.grafClient.CreateTeam(name)
+		if cErr != nil {
+			return 0, fmt.Errorf("recreate team after name mismatch: %w", cErr)
+		}
+		return id, nil
+	}
+	return team.ID, nil
+}
+
 // syncOnce performs a single synchronization pass.
 func (w *SyncWorker) syncOnce() error {
 	w.runMu.Lock()
@@ -192,67 +228,11 @@ func (w *SyncWorker) syncOnce() error {
 		}
 
 		// Get or create Grafana team
-		team, tErr := w.grafClient.GetTeamByName(grafTeam)
-		var teamID int64
-		var teamFoundViaCreate bool
-		if tErr != nil {
-			// If not found, create
-			if strings.Contains(strings.ToLower(tErr.Error()), "not found") {
-				slog.Info("sync: team not found via search, creating", "team", grafTeam)
-				id, cErr := w.grafClient.CreateTeam(grafTeam)
-				if cErr != nil {
-					slog.Error("failed to create grafana team", "team", grafTeam, "err", cErr)
-					continue
-				}
-				teamID = id
-				teamFoundViaCreate = true
-			} else {
-				slog.Error("failed to get grafana team", "team", grafTeam, "err", tErr)
-				continue
-			}
-		} else {
-			teamID = team.ID
-			slog.Info("sync: team found via search", "team", grafTeam, "teamID", teamID)
-
-			// Verify the team actually exists via the detail API. The search API may
-			// return phantom entries (stale index entries pointing to non-existent teams).
-			// Also check that the team name matches — after a Grafana restart with fresh
-			// SQLite, the ID might belong to a different team entirely.
-			if teamDetail, vErr := w.grafClient.GetTeam(teamID); vErr != nil {
-				slog.Warn("sync: team from search does not exist (phantom entry), recreating",
-					"team", grafTeam, "teamID", teamID, "err", vErr)
-				id, cErr := w.grafClient.CreateTeam(grafTeam)
-				if cErr != nil {
-					slog.Error("sync: failed to recreate team after phantom detection",
-						"team", grafTeam, "err", cErr)
-					continue
-				}
-				teamID = id
-				teamFoundViaCreate = true
-				slog.Info("sync: team recreated successfully", "team", grafTeam, "teamID", teamID)
-			} else if teamDetail.Name != grafTeam {
-				slog.Warn("sync: team name mismatch, recreating",
-					"team", grafTeam, "teamID", teamID, "actualName", teamDetail.Name)
-				id, cErr := w.grafClient.CreateTeam(grafTeam)
-				if cErr != nil {
-					slog.Error("sync: failed to recreate team after name mismatch",
-						"team", grafTeam, "err", cErr)
-					continue
-				}
-				teamID = id
-				teamFoundViaCreate = true
-				slog.Info("sync: team recreated successfully after name mismatch",
-					"team", grafTeam, "teamID", teamID)
-			} else {
-				slog.Info("sync: team verified", "team", grafTeam, "teamID", teamID)
-			}
-		}
-
-		if teamID <= 0 {
-			slog.Error("invalid team ID after lookup/creation", "team", grafTeam, "teamID", teamID)
+		teamID, err := w.resolveTeam(grafTeam)
+		if err != nil {
+			slog.Error("sync: failed to resolve team", "team", grafTeam, "err", err)
 			continue
 		}
-		slog.Info("sync: resolved team", "team", grafTeam, "teamID", teamID, "created", teamFoundViaCreate)
 
 		// Current members of the Grafana team
 		members, mErr := w.grafClient.GetTeamMembers(teamID)
@@ -318,37 +298,12 @@ func (w *SyncWorker) syncFolderPermissions(folderName string, fps []grafConfig.F
 
 	var newPerms []grafana.FolderPermission
 	for _, fp := range fps {
-		team, err := w.grafClient.GetTeamByName(fp.Team)
+		teamID, err := w.resolveTeam(fp.Team)
 		if err != nil {
-			teamID, err2 := w.grafClient.CreateTeam(fp.Team)
-			if err2 != nil {
-				return fmt.Errorf("get/create team %s: %w", fp.Team, err2)
-			}
-			team = &grafana.Team{ID: teamID, Name: fp.Team}
-		} else {
-			// Verify the team actually exists and the name matches
-			// (search API may return stale entries or wrong ID after Grafana restart).
-			if teamDetail, vErr := w.grafClient.GetTeam(team.ID); vErr != nil {
-				slog.Warn("sync: folder perm team from search does not exist, recreating",
-					"team", fp.Team, "teamID", team.ID, "err", vErr)
-				teamID, err2 := w.grafClient.CreateTeam(fp.Team)
-				if err2 != nil {
-					return fmt.Errorf("get/create team after phantom: %w", err2)
-				}
-				team = &grafana.Team{ID: teamID, Name: fp.Team}
-			} else if teamDetail.Name != fp.Team {
-				slog.Warn("sync: folder perm team name mismatch, recreating",
-					"team", fp.Team, "teamID", team.ID, "actualName", teamDetail.Name)
-				teamID, err2 := w.grafClient.CreateTeam(fp.Team)
-				if err2 != nil {
-					return fmt.Errorf("get/create team after name mismatch: %w", err2)
-				}
-				team = &grafana.Team{ID: teamID, Name: fp.Team}
-			}
+			return fmt.Errorf("resolve team %s: %w", fp.Team, err)
 		}
-
 		newPerms = append(newPerms, grafana.FolderPermission{
-			TeamID:     team.ID,
+			TeamID:     teamID,
 			Permission: fp.Permission,
 		})
 	}
