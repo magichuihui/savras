@@ -81,7 +81,7 @@ extraVolumeMounts:
 
 extraContainers: |
   - name: proxy
-    image: ghcr.io/magichuihui/savras:0.1.3
+    image: ghcr.io/magichuihui/savras:0.1.4
     env:
     - name: SAVRAS_AUTH_LOCAL_ADMIN_PASSWORD
       valueFrom:
