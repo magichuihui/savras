@@ -37,6 +37,7 @@ ldap:
   group_attr: "cn"
   group_member_attr: "memberUid"
   group_filter: "(objectClass=posixGroup)"
+  member_of_attr: "memberOf"
 
 sync:
   enabled: true

@@ -108,9 +108,13 @@ func ldapSearchEntry(username string) (*ldap.Entry, error) {
 	}
 
 	filter := fmt.Sprintf(globalCfg.LDAP.UserFilter, ldap.EscapeFilter(username))
+	attrs := []string{"dn", globalCfg.LDAP.EmailAttr}
+	if globalCfg.LDAP.MemberOfAttr != "" {
+		attrs = append(attrs, globalCfg.LDAP.MemberOfAttr)
+	}
 	sr, err := conn.Search(ldap.NewSearchRequest(
 		globalCfg.LDAP.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,
-		0, 0, false, filter, []string{"dn", globalCfg.LDAP.EmailAttr, "memberOf"}, nil))
+		0, 0, false, filter, attrs, nil))
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +153,7 @@ func Authenticate(username, password string) (*AuthResult, error) {
 	}
 
 	email := entry.GetAttributeValue(globalCfg.LDAP.EmailAttr)
-	groups := entry.GetAttributeValues("memberOf")
+	groups := entry.GetAttributeValues(globalCfg.LDAP.MemberOfAttr)
 	return &AuthResult{Username: username, Email: email, Groups: groups}, nil
 }
 
@@ -160,7 +164,7 @@ func GetUserInfo(username string) (*AuthResult, error) {
 		return nil, err
 	}
 	email := entry.GetAttributeValue(globalCfg.LDAP.EmailAttr)
-	groups := entry.GetAttributeValues("memberOf")
+	groups := entry.GetAttributeValues(globalCfg.LDAP.MemberOfAttr)
 	return &AuthResult{Username: username, Email: email, Groups: groups}, nil
 }
 

@@ -122,7 +122,7 @@ This creates in the `monitoring` namespace:
 |---|---|---|---|
 | `testuser` | `testpass` | devops | devops (Admin) |
 | `jane` | `janepass` | developer | developer (Edit) |
-| `admin` | `admin` | devops (hardcoded) | devops (Admin, no LDAP needed) |
+| `admin` | `admin` | — | devops (Admin, local bypass — no LDAP) |
 
 The LDAP server matches `config.example.yaml` settings:
 

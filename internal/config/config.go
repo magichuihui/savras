@@ -46,6 +46,7 @@ type LDAPConfig struct {
 	GroupFilter     string `mapstructure:"group_filter"`
 	GroupMemberAttr string `mapstructure:"group_member_attr"`
 	GroupNameAttr   string `mapstructure:"group_attr"`
+	MemberOfAttr    string `mapstructure:"member_of_attr"`
 }
 
 func (l *LDAPConfig) URL() string {
@@ -97,6 +98,7 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("sync.startup_delay_seconds", 10)
 	v.SetDefault("ldap.host", "localhost")
 	v.SetDefault("ldap.port", 389)
+	v.SetDefault("ldap.member_of_attr", "memberOf")
 
 	var cfg Config
 	if err := v.ReadInConfig(); err != nil {
